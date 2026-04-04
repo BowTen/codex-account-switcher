@@ -64,6 +64,7 @@ class AccountStore:
             last_verified_at=last_verified_at,
         )
 
+        previous_snapshot = path.read_bytes() if path.exists() else None
         self._write_json_atomic(path, raw)
         registry["accounts"][name] = metadata.to_dict()
         if mark_active:
@@ -71,8 +72,12 @@ class AccountStore:
         try:
             self.save_registry(registry)
         except Exception:
-            if path.exists():
-                path.unlink()
+            if previous_snapshot is None:
+                if path.exists():
+                    path.unlink()
+            else:
+                path.write_bytes(previous_snapshot)
+                os.chmod(path, 0o600)
             raise
         return metadata
 
@@ -141,6 +146,8 @@ class AccountStore:
 
         old_path = self.accounts_dir / f"{old}.json"
         new_path = self.accounts_dir / f"{new}.json"
+        old_snapshot = old_path.read_bytes()
+        new_snapshot = new_path.read_bytes() if new_path.exists() else None
         self.ensure_dirs()
         old_path.replace(new_path)
 
@@ -152,8 +159,14 @@ class AccountStore:
         try:
             self.save_registry(registry)
         except Exception:
-            if new_path.exists():
-                new_path.replace(old_path)
+            old_path.write_bytes(old_snapshot)
+            os.chmod(old_path, 0o600)
+            if new_snapshot is None:
+                if new_path.exists():
+                    new_path.unlink()
+            else:
+                new_path.write_bytes(new_snapshot)
+                os.chmod(new_path, 0o600)
             raise
 
     def read_live_auth(self) -> dict[str, Any] | None:
