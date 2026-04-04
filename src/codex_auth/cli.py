@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+import argparse
+import sys
+
+from .service import CodexAuthService
+
+
+CANCELLED_EXIT_CODE = 3
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="codex-auth",
+        description="Manage local Codex auth.json account snapshots.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    save_parser = subparsers.add_parser("save", help="Save the current live auth.json as a named account.")
+    save_parser.add_argument("name")
+    save_parser.add_argument("--force", action="store_true")
+
+    use_parser = subparsers.add_parser("use", help="Switch to a saved account.")
+    use_parser.add_argument("name")
+
+    subparsers.add_parser("list", help="List saved accounts.")
+    subparsers.add_parser("ls", help="List saved accounts.")
+
+    inspect_parser = subparsers.add_parser("inspect", help="Inspect a saved account.")
+    inspect_parser.add_argument("name")
+
+    subparsers.add_parser("current", help="Show the current live account summary.")
+
+    rename_parser = subparsers.add_parser("rename", help="Rename a saved account.")
+    rename_parser.add_argument("old")
+    rename_parser.add_argument("new")
+    rename_parser.add_argument("--force", action="store_true")
+
+    remove_parser = subparsers.add_parser("remove", help="Remove a saved account.")
+    remove_parser.add_argument("name")
+    remove_parser.add_argument("--yes", action="store_true")
+    remove_parser.add_argument("--force-current", action="store_true")
+
+    rm_parser = subparsers.add_parser("rm", help="Remove a saved account.")
+    rm_parser.add_argument("name")
+    rm_parser.add_argument("--yes", action="store_true")
+    rm_parser.add_argument("--force-current", action="store_true")
+
+    subparsers.add_parser("doctor", help="Inspect local Codex and store state.")
+    return parser
+
+
+def print_kv_map(payload: dict[str, str | None]) -> None:
+    for key, value in payload.items():
+        print(f"{key}: {value}")
+
+
+def confirm_removal(name: str) -> bool:
+    try:
+        response = input(f"Remove account '{name}'? [y/N] ").strip().lower()
+    except EOFError:
+        return False
+    return response in {"y", "yes"}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    service = CodexAuthService()
+
+    try:
+        if args.command == "save":
+            metadata = service.save_current(args.name, force=args.force)
+            print(f"saved: {metadata.name} ({metadata.account_id})")
+            return 0
+
+        if args.command == "use":
+            result = service.use_account(args.name)
+            print(f"switched: {result.account_name}")
+            output = result.verification.stdout.strip()
+            if output:
+                print(output)
+            return 0 if result.verified else 2
+
+        if args.command in {"list", "ls"}:
+            active_name = service.active_account_name()
+            for item in service.list_accounts():
+                marker = "*" if item.name == active_name else " "
+                print(f"{marker} {item.name}\t{item.auth_mode}\t{item.account_id}\t{item.updated_at}")
+            return 0
+
+        if args.command == "inspect":
+            print_kv_map(service.inspect_account(args.name))
+            return 0
+
+        if args.command == "current":
+            print_kv_map(service.current_account())
+            return 0
+
+        if args.command == "rename":
+            service.rename_account(args.old, args.new, force=args.force)
+            print(f"renamed: {args.old} -> {args.new}")
+            return 0
+
+        if args.command in {"remove", "rm"}:
+            if not args.yes and sys.stdin.isatty() and not confirm_removal(args.name):
+                print(f"cancelled: remove {args.name}", file=sys.stderr)
+                return CANCELLED_EXIT_CODE
+            service.remove_account(args.name, force_current=args.force_current)
+            print(f"removed: {args.name}")
+            return 0
+
+        if args.command == "doctor":
+            print_kv_map(service.doctor())
+            return 0
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    parser.error(f"Unhandled command: {args.command}")
+    return 1
