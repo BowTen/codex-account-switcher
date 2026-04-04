@@ -55,6 +55,9 @@ class CodexAuthService:
     def list_accounts(self) -> list[AccountMetadata]:
         return self.store.list_metadata()
 
+    def active_account_name(self) -> str | None:
+        return self.store.matched_active_name()
+
     def inspect_account(self, name: str) -> dict[str, str | None]:
         registry = self.store.load_registry()
         if name not in registry["accounts"]:
@@ -72,7 +75,7 @@ class CodexAuthService:
         }
 
     def current_account(self) -> dict[str, str | None]:
-        active_name = self.store.matched_active_name()
+        active_name = self.active_account_name()
         live = self.store.read_live_auth()
         if active_name:
             return self.inspect_account(active_name)

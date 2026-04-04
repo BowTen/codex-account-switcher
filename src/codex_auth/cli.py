@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from .service import CodexAuthService
 
@@ -39,31 +40,37 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     service = CodexAuthService()
 
-    if args.command == "save":
-        metadata = service.save_current(args.name, force=args.force)
-        print(f"saved: {metadata.name} ({metadata.account_id})")
-        return 0
+    try:
+        if args.command == "save":
+            metadata = service.save_current(args.name, force=args.force)
+            print(f"saved: {metadata.name} ({metadata.account_id})")
+            return 0
 
-    if args.command == "use":
-        result = service.use_account(args.name)
-        print(f"switched: {result.account_name}")
-        print(result.verification.stdout.strip())
-        return 0 if result.verified else 2
+        if args.command == "use":
+            result = service.use_account(args.name)
+            print(f"switched: {result.account_name}")
+            output = result.verification.stdout.strip()
+            if output:
+                print(output)
+            return 0 if result.verified else 2
 
-    if args.command in {"list", "ls"}:
-        active_name = service.store.matched_active_name()
-        for item in service.list_accounts():
-            marker = "*" if item.name == active_name else " "
-            print(f"{marker} {item.name}\t{item.auth_mode}\t{item.account_id}\t{item.updated_at}")
-        return 0
+        if args.command in {"list", "ls"}:
+            active_name = service.active_account_name()
+            for item in service.list_accounts():
+                marker = "*" if item.name == active_name else " "
+                print(f"{marker} {item.name}\t{item.auth_mode}\t{item.account_id}\t{item.updated_at}")
+            return 0
 
-    if args.command == "inspect":
-        print_kv_map(service.inspect_account(args.name))
-        return 0
+        if args.command == "inspect":
+            print_kv_map(service.inspect_account(args.name))
+            return 0
 
-    if args.command == "current":
-        print_kv_map(service.current_account())
-        return 0
+        if args.command == "current":
+            print_kv_map(service.current_account())
+            return 0
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     parser.error(f"Unhandled command: {args.command}")
     return 0

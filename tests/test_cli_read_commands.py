@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -61,6 +63,41 @@ def test_cli_save_list_current_and_inspect(tmp_path) -> None:
     inspect_result = run_cli(tmp_path, "inspect", "work")
     assert inspect_result.returncode == 0
     assert "chatgpt" in inspect_result.stdout
+
+
+@pytest.mark.parametrize("command", ["list", "ls"])
+def test_cli_list_commands_mark_active_account(tmp_path, command: str) -> None:
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "auth.json").write_text(json.dumps(make_snapshot("acct-work")))
+
+    assert run_cli(tmp_path, "save", "work").returncode == 0
+
+    result = run_cli(tmp_path, command)
+    assert result.returncode == 0
+    assert "* work" in result.stdout
+
+
+def test_cli_current_reports_unmanaged_live_auth_when_no_match(tmp_path) -> None:
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "auth.json").write_text(json.dumps(make_snapshot("acct-work")))
+
+    assert run_cli(tmp_path, "save", "work").returncode == 0
+    (codex_dir / "auth.json").write_text(json.dumps(make_snapshot("acct-personal")))
+
+    result = run_cli(tmp_path, "current")
+    assert result.returncode == 0
+    assert "managed_state: unmanaged" in result.stdout
+    assert "account_id: acct-personal" in result.stdout
+
+
+def test_cli_reports_concise_error_without_traceback(tmp_path) -> None:
+    result = run_cli(tmp_path, "inspect", "missing")
+
+    assert result.returncode == 1
+    assert "error: Unknown account: missing" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_cli_use_switches_to_a_saved_account(tmp_path) -> None:
