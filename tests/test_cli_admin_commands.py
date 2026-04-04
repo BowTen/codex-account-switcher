@@ -49,3 +49,15 @@ def test_cli_rename_remove_and_doctor(tmp_path) -> None:
     doctor_result = run_cli(tmp_path, "doctor")
     assert doctor_result.returncode == 0
     assert "codex_dir" in doctor_result.stdout
+
+
+def test_cli_remove_command_path(tmp_path) -> None:
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "auth.json").write_text(json.dumps(make_snapshot("acct-work")))
+
+    assert run_cli(tmp_path, "save", "work").returncode == 0
+    assert run_cli(tmp_path, "remove", "work", "--force-current", "--yes").returncode == 0
+
+    list_result = run_cli(tmp_path, "list")
+    assert "work" not in list_result.stdout
