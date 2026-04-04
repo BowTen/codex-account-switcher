@@ -35,7 +35,7 @@ codex-auth current
 codex-auth inspect work
 codex-auth use work
 codex-auth rename work primary
-codex-auth rm work --force-current
+codex-auth rm work --force-current --yes
 codex-auth doctor
 ```
 

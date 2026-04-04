@@ -8,6 +8,7 @@ def test_readme_mentions_uv_install_and_codex_auth() -> None:
     assert "## Commands" in text
     assert "## Development" in text
     assert "uv tool install git+https://github.com/OWNER/codex-account-switcher.git" in text
+    assert "codex-auth rm work --force-current --yes" in text
     assert "codex-auth" in text
 
 
@@ -21,3 +22,8 @@ def test_ci_workflow_mentions_expected_steps() -> None:
     assert "uv python install 3.12" in text
     assert "uv sync --dev" in text
     assert "uv run pytest -v" in text
+
+
+def test_pyproject_declares_readme() -> None:
+    text = Path("pyproject.toml").read_text()
+    assert 'readme = "README.md"' in text
