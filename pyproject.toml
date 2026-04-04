@@ -6,7 +6,6 @@ build-backend = "hatchling.build"
 name = "codex-account-switcher"
 version = "0.1.0"
 description = "Manage multiple local Codex auth.json snapshots"
-readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
 
