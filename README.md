@@ -18,7 +18,13 @@ uv sync --dev
 uv run codex-auth --help
 ```
 
-After publishing this repository to GitHub, install it on another machine with `uv tool install` using the repository URL shown by GitHub.
+After publishing this repository to GitHub, install it on another machine with:
+
+```bash
+uv tool install git+https://github.com/OWNER/codex-account-switcher.git
+```
+
+Replace `OWNER` with the GitHub account or organization that owns the repository.
 
 ## Commands
 
@@ -29,7 +35,7 @@ codex-auth current
 codex-auth inspect work
 codex-auth use work
 codex-auth rename work primary
-codex-auth rm primary --force-current
+codex-auth rm work --force-current
 codex-auth doctor
 ```
 
