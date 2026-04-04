@@ -68,7 +68,12 @@ class AccountStore:
         registry["accounts"][name] = metadata.to_dict()
         if mark_active:
             registry["active_name"] = name
-        self.save_registry(registry)
+        try:
+            self.save_registry(registry)
+        except Exception:
+            if path.exists():
+                path.unlink()
+            raise
         return metadata
 
     def list_metadata(self) -> list[AccountMetadata]:
@@ -84,11 +89,14 @@ class AccountStore:
         if not active_name:
             return None
 
-        live = self.read_live_auth()
-        if live is None:
-            return None
+        try:
+            live = self.read_live_auth()
+            if live is None:
+                return None
 
-        live_snapshot = parse_snapshot(live)
+            live_snapshot = parse_snapshot(live)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
         registry = self.load_registry()
         entry = registry["accounts"].get(active_name)
         if entry is None:
@@ -108,12 +116,19 @@ class AccountStore:
             raise ValueError("Refusing to remove the currently active account without --force-current")
 
         path = self.accounts_dir / f"{name}.json"
+        backup = path.read_bytes() if path.exists() else None
         if path.exists():
             path.unlink()
         registry["accounts"].pop(name)
         if registry["active_name"] == name:
             registry["active_name"] = None
-        self.save_registry(registry)
+        try:
+            self.save_registry(registry)
+        except Exception:
+            if backup is not None:
+                path.write_bytes(backup)
+                os.chmod(path, 0o600)
+            raise
 
     def rename_snapshot(self, old: str, new: str, *, force: bool) -> None:
         old = validate_account_name(old)
@@ -134,7 +149,12 @@ class AccountStore:
         registry["accounts"][new] = entry
         if registry["active_name"] == old:
             registry["active_name"] = new
-        self.save_registry(registry)
+        try:
+            self.save_registry(registry)
+        except Exception:
+            if new_path.exists():
+                new_path.replace(old_path)
+            raise
 
     def read_live_auth(self) -> dict[str, Any] | None:
         if not self.live_auth_path.exists():

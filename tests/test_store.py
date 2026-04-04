@@ -45,3 +45,74 @@ def test_matched_active_name_returns_none_when_live_auth_has_drifted(tmp_path) -
     store.write_live_auth(make_snapshot("acct-other"))
 
     assert store.matched_active_name() is None
+
+
+def test_matched_active_name_returns_none_when_live_auth_is_malformed(tmp_path) -> None:
+    store = AccountStore(tmp_path)
+    store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    store.live_auth_path.parent.mkdir(parents=True, exist_ok=True)
+    store.live_auth_path.write_text("{not json")
+
+    assert store.matched_active_name() is None
+
+
+def test_save_snapshot_rolls_back_snapshot_file_when_registry_write_fails(tmp_path, monkeypatch) -> None:
+    store = AccountStore(tmp_path)
+
+    def fail_registry_write(path, payload):  # type: ignore[no-untyped-def]
+        if path == store.registry_path:
+            raise OSError("registry write failed")
+        store._write_json_atomic_original(path, payload)
+
+    store._write_json_atomic_original = store._write_json_atomic  # type: ignore[attr-defined]
+    monkeypatch.setattr(store, "_write_json_atomic", fail_registry_write)
+
+    with pytest.raises(OSError, match="registry write failed"):
+        store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+
+    assert not (tmp_path / ".codex-account-switcher" / "accounts" / "work.json").exists()
+    assert not (tmp_path / ".codex-account-switcher" / "registry.json").exists()
+
+
+def test_remove_snapshot_rolls_back_deleted_file_when_registry_write_fails(tmp_path, monkeypatch) -> None:
+    store = AccountStore(tmp_path)
+    store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    snapshot_path = tmp_path / ".codex-account-switcher" / "accounts" / "work.json"
+    original_snapshot = snapshot_path.read_text()
+
+    def fail_registry_write(path, payload):  # type: ignore[no-untyped-def]
+        if path == store.registry_path:
+            raise OSError("registry write failed")
+        store._write_json_atomic_original(path, payload)
+
+    store._write_json_atomic_original = store._write_json_atomic  # type: ignore[attr-defined]
+    monkeypatch.setattr(store, "_write_json_atomic", fail_registry_write)
+
+    with pytest.raises(OSError, match="registry write failed"):
+        store.remove_snapshot("work", force_current=True)
+
+    assert snapshot_path.exists()
+    assert snapshot_path.read_text() == original_snapshot
+
+
+def test_rename_snapshot_rolls_back_renamed_file_when_registry_write_fails(tmp_path, monkeypatch) -> None:
+    store = AccountStore(tmp_path)
+    store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    old_path = tmp_path / ".codex-account-switcher" / "accounts" / "work.json"
+    original_snapshot = old_path.read_text()
+    new_path = tmp_path / ".codex-account-switcher" / "accounts" / "new.json"
+
+    def fail_registry_write(path, payload):  # type: ignore[no-untyped-def]
+        if path == store.registry_path:
+            raise OSError("registry write failed")
+        store._write_json_atomic_original(path, payload)
+
+    store._write_json_atomic_original = store._write_json_atomic  # type: ignore[attr-defined]
+    monkeypatch.setattr(store, "_write_json_atomic", fail_registry_write)
+
+    with pytest.raises(OSError, match="registry write failed"):
+        store.rename_snapshot("work", "new", force=False)
+
+    assert old_path.exists()
+    assert old_path.read_text() == original_snapshot
+    assert not new_path.exists()
