@@ -37,6 +37,7 @@ class CodexAuthService:
 
         target = self.store.load_snapshot(name)
         self.store.write_live_auth(target.raw)
+        self._set_active_account(name)
 
         verification = run_login_status(self.codex_executable, env=self.env)
         if verification.ok:
@@ -48,3 +49,8 @@ class CodexAuthService:
             account_name=name,
             verification=verification,
         )
+
+    def _set_active_account(self, name: str) -> None:
+        registry = self.store.load_registry()
+        registry["active_name"] = name
+        self.store.save_registry(registry)

@@ -28,6 +28,12 @@ def make_snapshot(account_id: str) -> dict[str, object]:
     }
 
 
+def make_snapshot_with_access_token(account_id: str, access_token: str) -> dict[str, object]:
+    snapshot = make_snapshot(account_id)
+    snapshot["tokens"]["access_token"] = access_token
+    return snapshot
+
+
 def test_use_account_switches_live_auth_and_marks_verified(tmp_path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -48,7 +54,7 @@ def test_use_account_switches_live_auth_and_marks_verified(tmp_path) -> None:
     assert service.store.current_active_name() == "personal"
 
 
-def test_use_account_reports_partial_success_when_verification_fails(tmp_path) -> None:
+def test_failed_verification_keeps_target_as_current_managed_account(tmp_path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     write_fake_codex(bin_dir, returncode=1, output="Not logged in\n")
@@ -65,4 +71,58 @@ def test_use_account_reports_partial_success_when_verification_fails(tmp_path) -
     assert result.switched is True
     assert result.verified is False
     assert service.store.read_live_auth()["tokens"]["account_id"] == "acct-personal"
-    assert service.store.current_active_name() == "work"
+    assert service.store.current_active_name() == "personal"
+
+
+def test_switching_away_after_failed_verification_saves_back_current_live_snapshot(tmp_path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    write_fake_codex(bin_dir, returncode=1, output="Not logged in\n")
+
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    service = CodexAuthService(home=tmp_path, env=env)
+
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    service.store.save_snapshot("personal", make_snapshot("acct-personal"), force=False, mark_active=False)
+    service.store.write_live_auth(make_snapshot("acct-work"))
+
+    first_result = service.use_account("personal")
+
+    assert first_result.verified is False
+    assert service.store.current_active_name() == "personal"
+
+    updated_personal = make_snapshot_with_access_token("acct-personal", "access-personal-updated")
+    service.store.write_live_auth(updated_personal)
+
+    second_bin_dir = tmp_path / "bin2"
+    second_bin_dir.mkdir()
+    write_fake_codex(second_bin_dir)
+    second_env = {**os.environ, "PATH": f"{second_bin_dir}:{os.environ['PATH']}"}
+    second_service = CodexAuthService(home=tmp_path, env=second_env)
+
+    second_result = second_service.use_account("work")
+
+    assert second_result.verified is True
+    assert second_service.store.read_live_auth()["tokens"]["account_id"] == "acct-work"
+    assert second_service.store.current_active_name() == "work"
+    assert second_service.store.load_snapshot("personal").raw["tokens"]["access_token"] == "access-personal-updated"
+
+
+def test_missing_codex_executable_returns_partial_result(tmp_path) -> None:
+    empty_bin_dir = tmp_path / "empty-bin"
+    empty_bin_dir.mkdir()
+    env = {**os.environ, "PATH": str(empty_bin_dir)}
+    service = CodexAuthService(home=tmp_path, env=env)
+
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    service.store.save_snapshot("personal", make_snapshot("acct-personal"), force=False, mark_active=False)
+    service.store.write_live_auth(make_snapshot("acct-work"))
+
+    result = service.use_account("personal")
+
+    assert result.switched is True
+    assert result.verified is False
+    assert result.verification.ok is False
+    assert "Could not find executable: codex" in result.verification.stderr
+    assert service.store.read_live_auth()["tokens"]["account_id"] == "acct-personal"
+    assert service.store.current_active_name() == "personal"

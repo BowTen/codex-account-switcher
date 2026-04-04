@@ -12,18 +12,26 @@ def run_login_status(
     *,
     env: Mapping[str, str] | None = None,
 ) -> VerificationResult:
-    if shutil.which(executable, path=env.get("PATH") if env else None) is None:
-        raise FileNotFoundError(f"Could not find executable: {executable}")
+    try:
+        if shutil.which(executable, path=env.get("PATH") if env else None) is None:
+            raise FileNotFoundError(f"Could not find executable: {executable}")
 
-    result = subprocess.run(
-        [executable, "login", "status"],
-        capture_output=True,
-        text=True,
-        env=dict(env) if env else None,
-    )
-    return VerificationResult(
-        ok=result.returncode == 0,
-        returncode=result.returncode,
-        stdout=result.stdout,
-        stderr=result.stderr,
-    )
+        result = subprocess.run(
+            [executable, "login", "status"],
+            capture_output=True,
+            text=True,
+            env=dict(env) if env else None,
+        )
+        return VerificationResult(
+            ok=result.returncode == 0,
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        return VerificationResult(
+            ok=False,
+            returncode=127,
+            stdout="",
+            stderr=str(exc),
+        )
