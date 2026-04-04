@@ -6,7 +6,7 @@ from typing import Mapping
 from .codex_cli import run_login_status
 from .models import AccountMetadata, UseResult
 from .store import AccountStore
-from .validators import utc_now_iso, validate_account_name
+from .validators import parse_snapshot, utc_now_iso, validate_account_name
 
 
 class CodexAuthService:
@@ -37,7 +37,9 @@ class CodexAuthService:
 
         target = self.store.load_snapshot(name)
         self.store.write_live_auth(target.raw)
-        self._set_active_account(name)
+        registry = self.store.load_registry()
+        registry["active_name"] = name
+        self.store.save_registry(registry)
 
         verification = run_login_status(self.codex_executable, env=self.env)
         if verification.ok:
@@ -50,7 +52,40 @@ class CodexAuthService:
             verification=verification,
         )
 
-    def _set_active_account(self, name: str) -> None:
+    def list_accounts(self) -> list[AccountMetadata]:
+        return self.store.list_metadata()
+
+    def inspect_account(self, name: str) -> dict[str, str | None]:
         registry = self.store.load_registry()
-        registry["active_name"] = name
-        self.store.save_registry(registry)
+        if name not in registry["accounts"]:
+            raise ValueError(f"Unknown account: {name}")
+        entry = registry["accounts"][name]
+        return {
+            "name": entry["name"],
+            "managed_state": "managed",
+            "auth_mode": entry["auth_mode"],
+            "account_id": entry["account_id"],
+            "created_at": entry["created_at"],
+            "updated_at": entry["updated_at"],
+            "last_refresh": entry["last_refresh"],
+            "last_verified_at": entry["last_verified_at"],
+        }
+
+    def current_account(self) -> dict[str, str | None]:
+        active_name = self.store.matched_active_name()
+        live = self.store.read_live_auth()
+        if active_name:
+            return self.inspect_account(active_name)
+        if live is None:
+            raise ValueError("No current ~/.codex/auth.json was found")
+        snapshot = parse_snapshot(live)
+        return {
+            "name": None,
+            "managed_state": "unmanaged",
+            "auth_mode": snapshot.auth_mode,
+            "account_id": snapshot.account_id,
+            "created_at": None,
+            "updated_at": None,
+            "last_refresh": snapshot.last_refresh,
+            "last_verified_at": None,
+        }
