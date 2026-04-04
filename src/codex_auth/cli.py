@@ -27,6 +27,23 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("name")
 
     subparsers.add_parser("current", help="Show the current live account summary.")
+
+    rename_parser = subparsers.add_parser("rename", help="Rename a saved account.")
+    rename_parser.add_argument("old")
+    rename_parser.add_argument("new")
+    rename_parser.add_argument("--force", action="store_true")
+
+    remove_parser = subparsers.add_parser("remove", help="Remove a saved account.")
+    remove_parser.add_argument("name")
+    remove_parser.add_argument("--yes", action="store_true")
+    remove_parser.add_argument("--force-current", action="store_true")
+
+    rm_parser = subparsers.add_parser("rm", help="Remove a saved account.")
+    rm_parser.add_argument("name")
+    rm_parser.add_argument("--yes", action="store_true")
+    rm_parser.add_argument("--force-current", action="store_true")
+
+    subparsers.add_parser("doctor", help="Inspect local Codex and store state.")
     return parser
 
 
@@ -68,9 +85,23 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "current":
             print_kv_map(service.current_account())
             return 0
+
+        if args.command == "rename":
+            service.rename_account(args.old, args.new, force=args.force)
+            print(f"renamed: {args.old} -> {args.new}")
+            return 0
+
+        if args.command in {"remove", "rm"}:
+            service.remove_account(args.name, force_current=args.force_current)
+            print(f"removed: {args.name}")
+            return 0
+
+        if args.command == "doctor":
+            print_kv_map(service.doctor())
+            return 0
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
     parser.error(f"Unhandled command: {args.command}")
-    return 0
+    return 1

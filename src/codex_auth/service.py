@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Mapping
 
@@ -91,4 +92,35 @@ class CodexAuthService:
             "updated_at": None,
             "last_refresh": snapshot.last_refresh,
             "last_verified_at": None,
+        }
+
+    def rename_account(self, old: str, new: str, *, force: bool) -> None:
+        self.store.rename_snapshot(old, new, force=force)
+
+    def remove_account(self, name: str, *, force_current: bool) -> None:
+        self.store.remove_snapshot(name, force_current=force_current)
+
+    def doctor(self) -> dict[str, str]:
+        registry_valid = "true"
+        live_auth_valid = "true"
+        try:
+            self.store.load_registry()
+        except Exception:
+            registry_valid = "false"
+        try:
+            live = self.store.read_live_auth()
+            if live is not None:
+                parse_snapshot(live)
+        except Exception:
+            live_auth_valid = "false"
+
+        path_value = self.env.get("PATH") if self.env is not None else None
+        return {
+            "codex_on_path": str(shutil.which(self.codex_executable, path=path_value) is not None).lower(),
+            "codex_dir": str(self.store.codex_dir),
+            "live_auth_exists": str(self.store.live_auth_path.exists()).lower(),
+            "live_auth_valid": live_auth_valid,
+            "store_root": str(self.store.root),
+            "registry_exists": str(self.store.registry_path.exists()).lower(),
+            "registry_valid": registry_valid,
         }
