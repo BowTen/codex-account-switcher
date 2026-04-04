@@ -22,6 +22,7 @@ def test_readme_mentions_uv_install_and_codex_auth() -> None:
     assert "codex-auth" in text
     assert "仅保存在当前机器本地" in text
     assert "首个公开版本不提供额外加密" in text
+    assert "不会打印 `access_token`、`refresh_token` 或 `id_token`" in text
     assert "不应提交任何真实的 `auth.json`" in text
 
 
