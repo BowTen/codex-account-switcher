@@ -115,7 +115,13 @@ class CodexAuthService:
             managed_snapshots_valid = "false"
             registry = {"accounts": {}}
 
-        for name in registry["accounts"]:
+        accounts = registry.get("accounts") if isinstance(registry, dict) else None
+        if not isinstance(accounts, dict):
+            registry_valid = "false"
+            managed_snapshots_valid = "false"
+            accounts = {}
+
+        for name in accounts:
             snapshot_path = self.store.accounts_dir / f"{name}.json"
             try:
                 parse_snapshot(json.loads(snapshot_path.read_text()))

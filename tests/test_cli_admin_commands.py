@@ -125,3 +125,20 @@ def test_doctor_reports_corrupted_managed_snapshot(tmp_path, monkeypatch) -> Non
 
     assert result["managed_snapshots_valid"] == "false"
     assert result["registry_valid"] == "true"
+
+
+def test_doctor_reports_malformed_registry_shape(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "auth.json").write_text(json.dumps(make_snapshot("acct-work")))
+
+    registry_root = tmp_path / ".codex-account-switcher"
+    registry_root.mkdir()
+    (registry_root / "registry.json").write_text(json.dumps({"version": 1, "active_name": None}))
+
+    service = CodexAuthService()
+    result = service.doctor()
+
+    assert result["registry_valid"] == "false"
+    assert result["managed_snapshots_valid"] == "false"
