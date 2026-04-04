@@ -32,3 +32,19 @@ class AccountMetadata:
             "last_refresh": self.last_refresh,
             "last_verified_at": self.last_verified_at,
         }
+
+
+@dataclass(slots=True)
+class VerificationResult:
+    ok: bool
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+@dataclass(slots=True)
+class UseResult:
+    switched: bool
+    verified: bool
+    account_name: str
+    verification: VerificationResult
