@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
 import shutil
+import stat
 from pathlib import Path
 from typing import Mapping
 
@@ -103,10 +106,23 @@ class CodexAuthService:
     def doctor(self) -> dict[str, str]:
         registry_valid = "true"
         live_auth_valid = "true"
+        managed_snapshots_valid = "true"
+        managed_snapshot_count = 0
         try:
-            self.store.load_registry()
+            registry = self.store.load_registry()
         except Exception:
             registry_valid = "false"
+            managed_snapshots_valid = "false"
+            registry = {"accounts": {}}
+
+        for name in registry["accounts"]:
+            snapshot_path = self.store.accounts_dir / f"{name}.json"
+            try:
+                parse_snapshot(json.loads(snapshot_path.read_text()))
+                managed_snapshot_count += 1
+            except Exception:
+                managed_snapshots_valid = "false"
+
         try:
             live = self.store.read_live_auth()
             if live is not None:
@@ -118,9 +134,27 @@ class CodexAuthService:
         return {
             "codex_on_path": str(shutil.which(self.codex_executable, path=path_value) is not None).lower(),
             "codex_dir": str(self.store.codex_dir),
+            "codex_dir_exists": str(self.store.codex_dir.exists()).lower(),
+            "codex_dir_creatable": str(self._path_creatable(self.store.codex_dir)).lower(),
             "live_auth_exists": str(self.store.live_auth_path.exists()).lower(),
             "live_auth_valid": live_auth_valid,
+            "live_auth_mode_600": str(self._is_mode_600(self.store.live_auth_path)).lower(),
             "store_root": str(self.store.root),
+            "store_root_exists": str(self.store.root.exists()).lower(),
+            "store_root_creatable": str(self._path_creatable(self.store.root)).lower(),
             "registry_exists": str(self.store.registry_path.exists()).lower(),
             "registry_valid": registry_valid,
+            "registry_mode_600": str(self._is_mode_600(self.store.registry_path)).lower(),
+            "managed_snapshots_checked": str(managed_snapshot_count),
+            "managed_snapshots_valid": managed_snapshots_valid,
         }
+
+    def _path_creatable(self, path: Path) -> bool:
+        target = path if path.exists() and path.is_dir() else path.parent
+        return target.exists() and os.access(target, os.W_OK | os.X_OK)
+
+    def _is_mode_600(self, path: Path) -> bool:
+        try:
+            return stat.S_IMODE(path.stat().st_mode) == 0o600
+        except OSError:
+            return False

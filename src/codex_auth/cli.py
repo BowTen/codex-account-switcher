@@ -6,6 +6,9 @@ import sys
 from .service import CodexAuthService
 
 
+CANCELLED_EXIT_CODE = 3
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="codex-auth",
@@ -52,6 +55,14 @@ def print_kv_map(payload: dict[str, str | None]) -> None:
         print(f"{key}: {value}")
 
 
+def confirm_removal(name: str) -> bool:
+    try:
+        response = input(f"Remove account '{name}'? [y/N] ").strip().lower()
+    except EOFError:
+        return False
+    return response in {"y", "yes"}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -92,6 +103,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command in {"remove", "rm"}:
+            if not args.yes and sys.stdin.isatty() and not confirm_removal(args.name):
+                print(f"cancelled: remove {args.name}", file=sys.stderr)
+                return CANCELLED_EXIT_CODE
             service.remove_account(args.name, force_current=args.force_current)
             print(f"removed: {args.name}")
             return 0
