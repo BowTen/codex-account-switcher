@@ -27,6 +27,9 @@ def _is_nonempty_string(value: object) -> bool:
 
 
 def parse_snapshot(raw: dict[str, Any]) -> AccountSnapshot:
+    if not isinstance(raw, dict):
+        raise ValueError("Missing or invalid snapshot root")
+
     auth_mode = raw.get("auth_mode")
     tokens = raw.get("tokens")
     if not isinstance(auth_mode, str) or auth_mode not in SUPPORTED_AUTH_MODES:

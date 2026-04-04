@@ -14,6 +14,12 @@ def test_parse_snapshot_rejects_invalid_tokens() -> None:
         parse_snapshot(raw)
 
 
+@pytest.mark.parametrize("raw", [None, [], "not-json", 123])
+def test_parse_snapshot_rejects_non_dict_root(raw: object) -> None:
+    with pytest.raises(ValueError, match="Missing or invalid snapshot root"):
+        parse_snapshot(raw)  # type: ignore[arg-type]
+
+
 def test_parse_snapshot_extracts_required_metadata() -> None:
     raw = {
         "auth_mode": "chatgpt",
