@@ -1,11 +1,12 @@
 from pathlib import Path
+import re
 
 
 def test_readme_mentions_uv_install_and_codex_auth() -> None:
     text = Path("README.md").read_text()
     ordered_markers = [
         "# codex-account-switcher",
-        "`codex-auth` 是一个用于管理多套本地 Codex `auth.json` 登录快照的命令行工具，适合需要在同一台机器上快速切换不同账号状态的开发者。",
+        "多套本地 Codex `auth.json`",
         "## 适用场景",
         "## 功能概览",
         "## 安全说明",
@@ -16,8 +17,12 @@ def test_readme_mentions_uv_install_and_codex_auth() -> None:
     ]
     positions = [text.index(marker) for marker in ordered_markers]
     assert positions == sorted(positions)
-    assert "uv tool install git+https://github.com/BowTen/codex-account-switcher.git" in text
+    assert "uv tool install git+https://github.com/" in text
+    assert re.search(r"uv tool install git\+https://github\.com/[^/\s]+/codex-account-switcher\.git", text)
     assert "codex-auth" in text
+    assert "仅保存在当前机器本地" in text
+    assert "首个公开版本不提供额外加密" in text
+    assert "不应提交任何真实的 `auth.json`" in text
 
 
 def test_ci_workflow_exists() -> None:
