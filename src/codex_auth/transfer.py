@@ -23,6 +23,12 @@ NONCE_LENGTH = 12
 SCRYPT_N = 2**14
 SCRYPT_R = 8
 SCRYPT_P = 1
+KDF_PARAMS_V1 = {
+    "length": KEY_LENGTH,
+    "n": SCRYPT_N,
+    "r": SCRYPT_R,
+    "p": SCRYPT_P,
+}
 PASSHRASE_ERROR_MESSAGE = "invalid passphrase or corrupted file"
 UNSUPPORTED_VERSION_MESSAGE = "unsupported transfer format version"
 INVALID_FILE_MESSAGE = "invalid transfer file"
@@ -34,6 +40,9 @@ def encrypt_transfer_archive(
     passphrase: str,
     format_version: int = FORMAT_VERSION,
 ) -> bytes:
+    if format_version != FORMAT_VERSION:
+        raise ValueError(UNSUPPORTED_VERSION_MESSAGE)
+
     salt = secrets.token_bytes(SALT_LENGTH)
     nonce = secrets.token_bytes(NONCE_LENGTH)
     key = _build_kdf(salt).derive(passphrase.encode("utf-8"))
@@ -49,10 +58,7 @@ def encrypt_transfer_archive(
         "kdf": KDF_NAME,
         "kdf_params": {
             "salt": _b64encode(salt),
-            "length": KEY_LENGTH,
-            "n": SCRYPT_N,
-            "r": SCRYPT_R,
-            "p": SCRYPT_P,
+            **KDF_PARAMS_V1,
         },
         "cipher": CIPHER_NAME,
         "nonce": _b64encode(nonce),
@@ -76,15 +82,17 @@ def decrypt_transfer_archive(blob: bytes, *, passphrase: str) -> TransferArchive
         raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
 
     kdf_params = _require_mapping(envelope, "kdf_params")
-    salt = _b64decode_required(kdf_params, "salt")
-    nonce = _b64decode_required(envelope, "nonce")
+    salt = _validate_kdf_params(kdf_params)
+    nonce = _b64decode_required(envelope, "nonce", expected_length=NONCE_LENGTH)
     ciphertext = _b64decode_required(envelope, "ciphertext")
 
     try:
-        key = _build_kdf(salt, kdf_params).derive(passphrase.encode("utf-8"))
+        key = _build_kdf(salt).derive(passphrase.encode("utf-8"))
         plaintext = AESGCM(key).decrypt(nonce, ciphertext, None)
-    except (InvalidTag, ValueError):
+    except InvalidTag:
         raise InvalidPassphraseError(PASSHRASE_ERROR_MESSAGE) from None
+    except ValueError:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE) from None
 
     payload = _load_json_object(plaintext)
     accounts_payload = _require_list(payload, "accounts")
@@ -102,14 +110,13 @@ def decrypt_transfer_archive(blob: bytes, *, passphrase: str) -> TransferArchive
     )
 
 
-def _build_kdf(salt: bytes, params: dict[str, Any] | None = None) -> Scrypt:
-    params = params or {}
+def _build_kdf(salt: bytes) -> Scrypt:
     return Scrypt(
         salt=salt,
-        length=int(params.get("length", KEY_LENGTH)),
-        n=int(params.get("n", SCRYPT_N)),
-        r=int(params.get("r", SCRYPT_R)),
-        p=int(params.get("p", SCRYPT_P)),
+        length=KEY_LENGTH,
+        n=SCRYPT_N,
+        r=SCRYPT_R,
+        p=SCRYPT_P,
     )
 
 
@@ -191,11 +198,23 @@ def _b64encode(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
-def _b64decode_required(data: dict[str, Any], key: str) -> bytes:
+def _validate_kdf_params(kdf_params: dict[str, Any]) -> bytes:
+    if set(kdf_params) != {"salt", *KDF_PARAMS_V1}:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    for key, expected in KDF_PARAMS_V1.items():
+        if kdf_params.get(key) != expected:
+            raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    return _b64decode_required(kdf_params, "salt", expected_length=SALT_LENGTH)
+
+
+def _b64decode_required(data: dict[str, Any], key: str, *, expected_length: int | None = None) -> bytes:
     value = data.get(key)
     if not isinstance(value, str):
         raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
     try:
-        return base64.b64decode(value.encode("ascii"), validate=True)
+        decoded = base64.b64decode(value.encode("ascii"), validate=True)
     except (ValueError, UnicodeEncodeError):
         raise InvalidTransferFileError(INVALID_FILE_MESSAGE) from None
+    if expected_length is not None and len(decoded) != expected_length:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    return decoded

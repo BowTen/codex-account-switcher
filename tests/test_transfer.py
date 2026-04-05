@@ -65,3 +65,32 @@ def test_decrypt_transfer_archive_rejects_unsupported_format_version() -> None:
 
     with pytest.raises(InvalidTransferFileError, match="unsupported transfer format version"):
         decrypt_transfer_archive(tampered_blob, passphrase="correct horse battery staple")
+
+
+def test_decrypt_transfer_archive_rejects_malformed_nonce_as_invalid_file() -> None:
+    blob = encrypt_transfer_archive([make_transfer_account("work", "acct-work")], passphrase="correct horse battery staple")
+    envelope = json.loads(blob)
+    envelope["nonce"] = "AA=="
+    tampered_blob = json.dumps(envelope).encode("utf-8")
+
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        decrypt_transfer_archive(tampered_blob, passphrase="correct horse battery staple")
+
+
+def test_decrypt_transfer_archive_rejects_tampered_kdf_params_as_invalid_file() -> None:
+    blob = encrypt_transfer_archive([make_transfer_account("work", "acct-work")], passphrase="correct horse battery staple")
+    envelope = json.loads(blob)
+    envelope["kdf_params"]["n"] = 2
+    tampered_blob = json.dumps(envelope).encode("utf-8")
+
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        decrypt_transfer_archive(tampered_blob, passphrase="correct horse battery staple")
+
+
+def test_encrypt_transfer_archive_rejects_unsupported_format_version() -> None:
+    with pytest.raises(ValueError, match="unsupported transfer format version"):
+        encrypt_transfer_archive(
+            [make_transfer_account("work", "acct-work")],
+            passphrase="correct horse battery staple",
+            format_version=99,
+        )
