@@ -1,7 +1,9 @@
 import os
 from pathlib import Path
 
+from codex_auth.models import ImportPlanItem, TransferAccount, TransferArchive
 from codex_auth.service import CodexAuthService
+from codex_auth.validators import build_metadata, parse_snapshot
 
 
 def write_fake_codex(bin_dir: Path, *, returncode: int = 0, output: str = "Logged in using ChatGPT\n") -> None:
@@ -126,3 +128,56 @@ def test_missing_codex_executable_returns_partial_result(tmp_path) -> None:
     assert "Could not find executable: codex" in result.verification.stderr
     assert service.store.read_live_auth()["tokens"]["account_id"] == "acct-personal"
     assert service.store.current_active_name() == "personal"
+
+
+def test_build_export_archive_includes_only_selected_accounts(tmp_path) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    service.store.save_snapshot("personal", make_snapshot("acct-personal"), force=False, mark_active=False)
+
+    archive = service.build_export_archive(["work"])
+
+    assert [account.name for account in archive.accounts] == ["work"]
+    assert archive.accounts[0].snapshot.raw["tokens"]["account_id"] == "acct-work"
+
+
+def test_apply_import_archive_writes_selected_accounts_without_touching_live_auth(tmp_path) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("work", make_snapshot("acct-old-work"), force=False, mark_active=True)
+    live_raw = make_snapshot("acct-live")
+    service.store.write_live_auth(live_raw)
+    active_before = service.store.current_active_name()
+
+    work_account = TransferAccount(
+        name="work",
+        metadata=build_metadata("work", parse_snapshot(make_snapshot("acct-new-work"))),
+        snapshot=parse_snapshot(make_snapshot("acct-new-work")),
+    )
+    travel_account = TransferAccount(
+        name="travel",
+        metadata=build_metadata("travel", parse_snapshot(make_snapshot("acct-travel"))),
+        snapshot=parse_snapshot(make_snapshot("acct-travel")),
+    )
+    archive = TransferArchive(
+        format_version=1,
+        kdf="scrypt",
+        kdf_params={"length": 32, "n": 16384, "r": 8, "p": 1},
+        cipher="aesgcm",
+        nonce=b"123456789012",
+        ciphertext=b"ciphertext",
+        accounts=[work_account, travel_account],
+        exported_at="2026-04-05T10:00:00Z",
+        tool_version="0.1.0",
+    )
+    plan = [
+        ImportPlanItem(source_account=work_account, target_name="work", action="overwrite"),
+        ImportPlanItem(source_account=travel_account, target_name="vacation", action="rename"),
+    ]
+
+    result = service.apply_import_archive(archive, plan)
+
+    assert result.imported == ["work", "vacation"]
+    assert service.store.load_snapshot("work").account_id == "acct-new-work"
+    assert service.store.load_snapshot("vacation").account_id == "acct-travel"
+    assert service.store.read_live_auth() == live_raw
+    assert service.store.current_active_name() == active_before

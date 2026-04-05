@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Mapping
 
 from .codex_cli import run_login_status
-from .models import AccountMetadata, UseResult
+from .models import AccountMetadata, ImportPlanItem, ImportResult, TransferAccount, TransferArchive, UseResult
 from .store import AccountStore
 from .validators import parse_snapshot, utc_now_iso, validate_account_name
 
@@ -58,6 +58,39 @@ class CodexAuthService:
 
     def list_accounts(self) -> list[AccountMetadata]:
         return self.store.list_metadata()
+
+    def build_export_archive(self, names: list[str]) -> TransferArchive:
+        if not names:
+            raise ValueError("No accounts selected for export")
+
+        accounts: list[TransferAccount] = []
+        for metadata, snapshot in self.store.load_snapshots(names):
+            accounts.append(
+                TransferAccount(
+                    name=metadata.name,
+                    metadata=metadata,
+                    snapshot=snapshot,
+                )
+            )
+
+        return TransferArchive(
+            format_version=1,
+            kdf="export",
+            kdf_params={},
+            cipher="none",
+            nonce=b"",
+            ciphertext=b"",
+            accounts=accounts,
+            exported_at=utc_now_iso(),
+            tool_version="0.1.0",
+        )
+
+    def apply_import_archive(
+        self,
+        archive: TransferArchive,
+        plan: list[ImportPlanItem],
+    ) -> ImportResult:
+        return self.store.import_snapshots(archive.accounts, plan)
 
     def active_account_name(self) -> str | None:
         return self.store.matched_active_name()

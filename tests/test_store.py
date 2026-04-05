@@ -2,7 +2,9 @@ import json
 
 import pytest
 
+from codex_auth.models import ImportPlanItem, TransferAccount
 from codex_auth.store import AccountStore
+from codex_auth.validators import build_metadata, parse_snapshot
 
 
 def make_snapshot(account_id: str) -> dict[str, object]:
@@ -173,3 +175,38 @@ def test_rename_snapshot_force_over_existing_target_restores_both_files_on_regis
 
     assert old_path.read_text() == original_source_text
     assert new_path.read_text() == original_target_text
+
+
+def test_load_snapshots_returns_saved_metadata_and_snapshots(tmp_path) -> None:
+    store = AccountStore(tmp_path)
+    source_raw = make_snapshot("acct-work")
+    store.save_snapshot("work", source_raw, force=False, mark_active=True)
+
+    snapshots = store.load_snapshots(["work"])
+
+    assert len(snapshots) == 1
+    metadata, snapshot = snapshots[0]
+    assert metadata.name == "work"
+    assert metadata.account_id == "acct-work"
+    assert snapshot.raw == source_raw
+
+
+def test_import_snapshots_rejects_duplicate_target_names(tmp_path) -> None:
+    store = AccountStore(tmp_path)
+    work_account = TransferAccount(
+        name="work",
+        metadata=build_metadata("work", parse_snapshot(make_snapshot("acct-work"))),
+        snapshot=parse_snapshot(make_snapshot("acct-work")),
+    )
+    personal_account = TransferAccount(
+        name="personal",
+        metadata=build_metadata("personal", parse_snapshot(make_snapshot("acct-personal"))),
+        snapshot=parse_snapshot(make_snapshot("acct-personal")),
+    )
+    plan = [
+        ImportPlanItem(source_account=work_account, target_name="shared", action="rename"),
+        ImportPlanItem(source_account=personal_account, target_name="shared", action="rename"),
+    ]
+
+    with pytest.raises(ValueError, match="Duplicate import target name: shared"):
+        store.import_snapshots([work_account, personal_account], plan)

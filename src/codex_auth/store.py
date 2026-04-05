@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .models import AccountMetadata, AccountSnapshot
+from .models import AccountMetadata, AccountSnapshot, ImportPlanItem, ImportResult, TransferAccount
 from .validators import build_metadata, parse_snapshot, validate_account_name
 
 
@@ -37,6 +37,17 @@ class AccountStore:
         if not path.exists():
             raise ValueError(f"Unknown account: {name}")
         return parse_snapshot(json.loads(path.read_text()))
+
+    def load_snapshots(self, names: list[str]) -> list[tuple[AccountMetadata, AccountSnapshot]]:
+        snapshots: list[tuple[AccountMetadata, AccountSnapshot]] = []
+        registry = self.load_registry()
+        for name in names:
+            validate_account_name(name)
+            entry = registry["accounts"].get(name)
+            if entry is None:
+                raise ValueError(f"Unknown account: {name}")
+            snapshots.append((AccountMetadata(**entry), self.load_snapshot(name)))
+        return snapshots
 
     def save_snapshot(
         self,
@@ -80,6 +91,56 @@ class AccountStore:
                 os.chmod(path, 0o600)
             raise
         return metadata
+
+    def import_snapshots(
+        self,
+        accounts: list[TransferAccount],
+        plan: list[ImportPlanItem],
+    ) -> ImportResult:
+        if not plan:
+            return ImportResult(imported=[], overwritten=[], renamed=[], skipped=[])
+
+        account_by_name = {account.name: account for account in accounts}
+        imported: list[str] = []
+        overwritten: list[str] = []
+        renamed: list[str] = []
+        skipped: list[str] = []
+        seen_targets: set[str] = set()
+
+        for item in plan:
+            source_account = item.source_account
+            if item.action == "skip":
+                skipped.append(source_account.name)
+                continue
+
+            if item.target_name in seen_targets:
+                raise ValueError(f"Duplicate import target name: {item.target_name}")
+            seen_targets.add(item.target_name)
+
+            account = account_by_name.get(source_account.name)
+            if account is None:
+                raise ValueError(f"Unknown import source account: {source_account.name}")
+
+            force = item.action == "overwrite"
+            self.save_snapshot(
+                item.target_name,
+                account.snapshot.raw,
+                force=force,
+                mark_active=False,
+            )
+
+            imported.append(item.target_name)
+            if force:
+                overwritten.append(item.target_name)
+            if item.target_name != source_account.name:
+                renamed.append(item.target_name)
+
+        return ImportResult(
+            imported=imported,
+            overwritten=overwritten,
+            renamed=renamed,
+            skipped=skipped,
+        )
 
     def list_metadata(self) -> list[AccountMetadata]:
         registry = self.load_registry()

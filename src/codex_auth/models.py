@@ -75,3 +75,11 @@ class ImportPlanItem:
     source_account: TransferAccount
     target_name: str
     action: str
+
+
+@dataclass(slots=True)
+class ImportResult:
+    imported: list[str]
+    overwritten: list[str]
+    renamed: list[str]
+    skipped: list[str]
