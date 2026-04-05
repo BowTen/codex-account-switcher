@@ -4,6 +4,7 @@ import base64
 import json
 import secrets
 from dataclasses import asdict
+from datetime import datetime
 from typing import Any, Iterable
 
 from cryptography.exceptions import InvalidTag
@@ -56,7 +57,7 @@ def encrypt_transfer_archive(
     nonce = secrets.token_bytes(NONCE_LENGTH)
     key = _build_kdf(salt).derive(passphrase.encode("utf-8"))
     payload = {
-        "exported_at": _validate_optional_metadata_value(exported_at, field_name="exported_at"),
+        "exported_at": _validate_optional_timestamp_value(exported_at, field_name="exported_at"),
         "tool_version": _validate_optional_metadata_value(tool_version, field_name="tool_version"),
         "accounts": [_serialize_transfer_account(account) for account in accounts],
     }
@@ -73,7 +74,10 @@ def encrypt_transfer_archive(
         "nonce": _b64encode(nonce),
         "ciphertext": _b64encode(ciphertext),
     }
-    return json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    blob = json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    if len(blob) > MAX_BLOB_BYTES:
+        raise ValueError("transfer archive exceeds size limit")
+    return blob
 
 
 def decrypt_transfer_archive(blob: bytes, *, passphrase: str) -> TransferArchive:
@@ -119,7 +123,7 @@ def decrypt_transfer_archive(blob: bytes, *, passphrase: str) -> TransferArchive
         nonce=nonce,
         ciphertext=ciphertext,
         accounts=accounts,
-        exported_at=_optional_string(payload, "exported_at"),
+        exported_at=_optional_timestamp_string(payload, "exported_at"),
         tool_version=_optional_string(payload, "tool_version"),
     )
 
@@ -182,10 +186,10 @@ def _deserialize_transfer_account(data: Any) -> TransferAccount:
         name=validated_name,
         auth_mode=parsed_snapshot.auth_mode,
         account_id=parsed_snapshot.account_id,
-        created_at=_require_string(metadata_data, "created_at"),
-        updated_at=_require_string(metadata_data, "updated_at"),
+        created_at=_require_timestamp_string(metadata_data, "created_at"),
+        updated_at=_require_timestamp_string(metadata_data, "updated_at"),
         last_refresh=parsed_snapshot.last_refresh,
-        last_verified_at=_optional_string(metadata_data, "last_verified_at"),
+        last_verified_at=_optional_timestamp_string(metadata_data, "last_verified_at"),
     )
     snapshot = AccountSnapshot(
         auth_mode=parsed_snapshot.auth_mode,
@@ -200,6 +204,15 @@ def _validate_optional_metadata_value(value: Any, *, field_name: str) -> str | N
     if value is None or isinstance(value, str):
         return value
     raise ValueError(f"{field_name} must be a string or None")
+
+
+def _validate_optional_timestamp_value(value: Any, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string or None")
+    _parse_iso_timestamp(value)
+    return value
 
 
 def _load_json_object(data: bytes) -> dict[str, Any]:
@@ -231,6 +244,15 @@ def _require_string(data: Any, key: str) -> str:
     return value
 
 
+def _require_timestamp_string(data: Any, key: str) -> str:
+    value = _require_string(data, key)
+    try:
+        _parse_iso_timestamp(value)
+    except ValueError:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE) from None
+    return value
+
+
 def _optional_string(data: Any, key: str) -> str | None:
     value = data.get(key)
     if value is None:
@@ -240,8 +262,23 @@ def _optional_string(data: Any, key: str) -> str | None:
     return value
 
 
+def _optional_timestamp_string(data: Any, key: str) -> str | None:
+    value = _optional_string(data, key)
+    if value is None:
+        return None
+    try:
+        _parse_iso_timestamp(value)
+    except ValueError:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE) from None
+    return value
+
+
 def _b64encode(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
+
+
+def _parse_iso_timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def _validate_kdf_params(kdf_params: dict[str, Any]) -> bytes:

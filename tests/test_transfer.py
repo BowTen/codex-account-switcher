@@ -178,12 +178,32 @@ def test_decrypt_transfer_archive_rejects_invalid_tool_version_type() -> None:
         decrypt_transfer_archive(tampered_blob, passphrase="correct horse battery staple")
 
 
+def test_decrypt_transfer_archive_rejects_non_iso_exported_at() -> None:
+    blob = encrypt_transfer_archive([make_transfer_account("work", "acct-work")], passphrase="correct horse battery staple")
+    tampered_blob = rewrite_encrypted_payload(
+        blob,
+        passphrase="correct horse battery staple",
+        mutate_payload=lambda payload: payload.__setitem__("exported_at", "definitely-not-a-timestamp"),
+    )
+
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        decrypt_transfer_archive(tampered_blob, passphrase="correct horse battery staple")
+
+
 def test_decrypt_transfer_archive_rejects_blob_over_size_limit(monkeypatch) -> None:
     blob = encrypt_transfer_archive([make_transfer_account("work", "acct-work")], passphrase="correct horse battery staple")
     monkeypatch.setattr(transfer_module, "MAX_BLOB_BYTES", len(blob) - 1)
 
     with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
         decrypt_transfer_archive(blob, passphrase="correct horse battery staple")
+
+
+def test_encrypt_transfer_archive_rejects_blob_over_size_limit() -> None:
+    account = make_transfer_account("work", "acct-work")
+    account.snapshot.raw["tokens"]["access_token"] = "x" * transfer_module.MAX_BLOB_BYTES
+
+    with pytest.raises(ValueError, match="transfer archive exceeds size limit"):
+        encrypt_transfer_archive([account], passphrase="correct horse battery staple")
 
 
 def test_decrypt_transfer_archive_rejects_account_count_over_limit(monkeypatch) -> None:
