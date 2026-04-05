@@ -21,6 +21,8 @@ CIPHER_NAME = "aesgcm"
 KEY_LENGTH = 32
 SALT_LENGTH = 16
 NONCE_LENGTH = 12
+MAX_BLOB_BYTES = 1024 * 1024
+MAX_ACCOUNT_COUNT = 100
 SCRYPT_N = 2**14
 SCRYPT_R = 8
 SCRYPT_P = 1
@@ -40,16 +42,22 @@ def encrypt_transfer_archive(
     *,
     passphrase: str,
     format_version: int = FORMAT_VERSION,
+    exported_at: str | None = None,
+    tool_version: str | None = __version__,
 ) -> bytes:
     if format_version != FORMAT_VERSION:
         raise ValueError(UNSUPPORTED_VERSION_MESSAGE)
+
+    accounts = list(accounts)
+    if len(accounts) > MAX_ACCOUNT_COUNT:
+        raise ValueError("too many accounts for transfer archive")
 
     salt = secrets.token_bytes(SALT_LENGTH)
     nonce = secrets.token_bytes(NONCE_LENGTH)
     key = _build_kdf(salt).derive(passphrase.encode("utf-8"))
     payload = {
-        "exported_at": None,
-        "tool_version": __version__,
+        "exported_at": _validate_optional_metadata_value(exported_at, field_name="exported_at"),
+        "tool_version": _validate_optional_metadata_value(tool_version, field_name="tool_version"),
         "accounts": [_serialize_transfer_account(account) for account in accounts],
     }
     plaintext = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
@@ -69,6 +77,9 @@ def encrypt_transfer_archive(
 
 
 def decrypt_transfer_archive(blob: bytes, *, passphrase: str) -> TransferArchive:
+    if len(blob) > MAX_BLOB_BYTES:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+
     envelope = _load_json_object(blob)
     format_version = envelope.get("format_version")
     if format_version != FORMAT_VERSION:
@@ -97,6 +108,8 @@ def decrypt_transfer_archive(blob: bytes, *, passphrase: str) -> TransferArchive
 
     payload = _load_json_object(plaintext)
     accounts_payload = _require_list(payload, "accounts")
+    if len(accounts_payload) > MAX_ACCOUNT_COUNT:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
     accounts = [_deserialize_transfer_account(item) for item in accounts_payload]
     return TransferArchive(
         format_version=format_version,
@@ -106,8 +119,8 @@ def decrypt_transfer_archive(blob: bytes, *, passphrase: str) -> TransferArchive
         nonce=nonce,
         ciphertext=ciphertext,
         accounts=accounts,
-        exported_at=payload.get("exported_at"),
-        tool_version=payload.get("tool_version"),
+        exported_at=_optional_string(payload, "exported_at"),
+        tool_version=_optional_string(payload, "tool_version"),
     )
 
 
@@ -181,6 +194,12 @@ def _deserialize_transfer_account(data: Any) -> TransferAccount:
         raw=parsed_snapshot.raw,
     )
     return TransferAccount(name=validated_name, metadata=metadata, snapshot=snapshot)
+
+
+def _validate_optional_metadata_value(value: Any, *, field_name: str) -> str | None:
+    if value is None or isinstance(value, str):
+        return value
+    raise ValueError(f"{field_name} must be a string or None")
 
 
 def _load_json_object(data: bytes) -> dict[str, Any]:

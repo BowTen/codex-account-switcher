@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 from codex_auth.errors import InvalidPassphraseError, InvalidTransferFileError
 from codex_auth.models import AccountMetadata, AccountSnapshot, TransferAccount
+from codex_auth import transfer as transfer_module
 from codex_auth.transfer import decrypt_transfer_archive, encrypt_transfer_archive
 
 
@@ -36,15 +40,45 @@ def make_transfer_account(name: str, account_id: str) -> TransferAccount:
     return TransferAccount(name=name, metadata=metadata, snapshot=snapshot)
 
 
+def rewrite_encrypted_payload(
+    blob: bytes, *, passphrase: str, mutate_payload  # type: ignore[no-untyped-def]
+) -> bytes:
+    envelope = json.loads(blob)
+    params = envelope["kdf_params"]
+    salt = base64.b64decode(params["salt"])
+    nonce = base64.b64decode(envelope["nonce"])
+    ciphertext = base64.b64decode(envelope["ciphertext"])
+    key = Scrypt(
+        salt=salt,
+        length=params["length"],
+        n=params["n"],
+        r=params["r"],
+        p=params["p"],
+    ).derive(passphrase.encode("utf-8"))
+    payload = json.loads(AESGCM(key).decrypt(nonce, ciphertext, None))
+    mutate_payload(payload)
+    envelope["ciphertext"] = base64.b64encode(
+        AESGCM(key).encrypt(nonce, json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"), None)
+    ).decode("ascii")
+    return json.dumps(envelope).encode("utf-8")
+
+
 def test_encrypt_and_decrypt_transfer_archive_round_trip() -> None:
     payload = [make_transfer_account("work", "acct-work"), make_transfer_account("personal", "acct-personal")]
 
-    blob = encrypt_transfer_archive(payload, passphrase="correct horse battery staple")
+    blob = encrypt_transfer_archive(
+        payload,
+        passphrase="correct horse battery staple",
+        exported_at="2026-04-05T11:00:00Z",
+        tool_version="0.1.0-test",
+    )
     restored = decrypt_transfer_archive(blob, passphrase="correct horse battery staple")
 
     assert restored.format_version == 1
     assert restored.kdf == "scrypt"
     assert restored.cipher == "aesgcm"
+    assert restored.exported_at == "2026-04-05T11:00:00Z"
+    assert restored.tool_version == "0.1.0-test"
     assert [account.name for account in restored.accounts] == ["work", "personal"]
     assert restored.accounts[0].metadata.account_id == "acct-work"
     assert restored.accounts[1].snapshot.raw["tokens"]["refresh_token"] == "refresh-acct-personal"
@@ -115,6 +149,49 @@ def test_decrypt_transfer_archive_rejects_metadata_identity_drift() -> None:
     account = make_transfer_account("work", "acct-work")
     account.metadata.account_id = "acct-other"
     blob = encrypt_transfer_archive([account], passphrase="correct horse battery staple")
+
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        decrypt_transfer_archive(blob, passphrase="correct horse battery staple")
+
+
+def test_decrypt_transfer_archive_rejects_invalid_exported_at_type() -> None:
+    blob = encrypt_transfer_archive([make_transfer_account("work", "acct-work")], passphrase="correct horse battery staple")
+    tampered_blob = rewrite_encrypted_payload(
+        blob,
+        passphrase="correct horse battery staple",
+        mutate_payload=lambda payload: payload.__setitem__("exported_at", 123),
+    )
+
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        decrypt_transfer_archive(tampered_blob, passphrase="correct horse battery staple")
+
+
+def test_decrypt_transfer_archive_rejects_invalid_tool_version_type() -> None:
+    blob = encrypt_transfer_archive([make_transfer_account("work", "acct-work")], passphrase="correct horse battery staple")
+    tampered_blob = rewrite_encrypted_payload(
+        blob,
+        passphrase="correct horse battery staple",
+        mutate_payload=lambda payload: payload.__setitem__("tool_version", ["0.1.0"]),
+    )
+
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        decrypt_transfer_archive(tampered_blob, passphrase="correct horse battery staple")
+
+
+def test_decrypt_transfer_archive_rejects_blob_over_size_limit(monkeypatch) -> None:
+    blob = encrypt_transfer_archive([make_transfer_account("work", "acct-work")], passphrase="correct horse battery staple")
+    monkeypatch.setattr(transfer_module, "MAX_BLOB_BYTES", len(blob) - 1)
+
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        decrypt_transfer_archive(blob, passphrase="correct horse battery staple")
+
+
+def test_decrypt_transfer_archive_rejects_account_count_over_limit(monkeypatch) -> None:
+    blob = encrypt_transfer_archive(
+        [make_transfer_account("work", "acct-work"), make_transfer_account("personal", "acct-personal")],
+        passphrase="correct horse battery staple",
+    )
+    monkeypatch.setattr(transfer_module, "MAX_ACCOUNT_COUNT", 1)
 
     with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
         decrypt_transfer_archive(blob, passphrase="correct horse battery staple")
