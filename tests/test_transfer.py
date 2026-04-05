@@ -94,3 +94,27 @@ def test_encrypt_transfer_archive_rejects_unsupported_format_version() -> None:
             passphrase="correct horse battery staple",
             format_version=99,
         )
+
+
+def test_decrypt_transfer_archive_rejects_non_utf8_blob_as_invalid_file() -> None:
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        decrypt_transfer_archive(b"\xff", passphrase="correct horse battery staple")
+
+
+def test_decrypt_transfer_archive_rejects_invalid_account_name_in_payload() -> None:
+    account = make_transfer_account("work", "acct-work")
+    account.name = "bad name"
+    account.metadata.name = "bad name"
+    blob = encrypt_transfer_archive([account], passphrase="correct horse battery staple")
+
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        decrypt_transfer_archive(blob, passphrase="correct horse battery staple")
+
+
+def test_decrypt_transfer_archive_rejects_metadata_identity_drift() -> None:
+    account = make_transfer_account("work", "acct-work")
+    account.metadata.account_id = "acct-other"
+    blob = encrypt_transfer_archive([account], passphrase="correct horse battery staple")
+
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        decrypt_transfer_archive(blob, passphrase="correct horse battery staple")

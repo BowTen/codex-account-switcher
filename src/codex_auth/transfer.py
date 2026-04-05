@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from . import __version__
 from .errors import InvalidPassphraseError, InvalidTransferFileError
 from .models import AccountMetadata, AccountSnapshot, TransferAccount, TransferArchive
+from .validators import parse_snapshot, validate_account_name
 
 FORMAT_VERSION = 1
 KDF_NAME = "scrypt"
@@ -135,31 +136,57 @@ def _serialize_transfer_account(account: TransferAccount) -> dict[str, Any]:
 
 def _deserialize_transfer_account(data: Any) -> TransferAccount:
     mapping = _require_mapping(data)
+    name = _require_string(mapping, "name")
     metadata_data = _require_mapping(mapping, "metadata")
     snapshot_data = _require_mapping(mapping, "snapshot")
+    metadata_name = _require_string(metadata_data, "name")
+    raw = dict(_require_mapping(snapshot_data, "raw"))
+
+    try:
+        validated_name = validate_account_name(name)
+        parsed_snapshot = parse_snapshot(raw)
+    except ValueError:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE) from None
+
+    if metadata_name != validated_name:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+
+    if _require_string(metadata_data, "auth_mode") != parsed_snapshot.auth_mode:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    if _require_string(metadata_data, "account_id") != parsed_snapshot.account_id:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    if _optional_string(metadata_data, "last_refresh") != parsed_snapshot.last_refresh:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+
+    if _require_string(snapshot_data, "auth_mode") != parsed_snapshot.auth_mode:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    if _require_string(snapshot_data, "account_id") != parsed_snapshot.account_id:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    if _optional_string(snapshot_data, "last_refresh") != parsed_snapshot.last_refresh:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+
     metadata = AccountMetadata(
-        name=_require_string(metadata_data, "name"),
-        auth_mode=_require_string(metadata_data, "auth_mode"),
-        account_id=_require_string(metadata_data, "account_id"),
+        name=validated_name,
+        auth_mode=parsed_snapshot.auth_mode,
+        account_id=parsed_snapshot.account_id,
         created_at=_require_string(metadata_data, "created_at"),
         updated_at=_require_string(metadata_data, "updated_at"),
-        last_refresh=_optional_string(metadata_data, "last_refresh"),
+        last_refresh=parsed_snapshot.last_refresh,
         last_verified_at=_optional_string(metadata_data, "last_verified_at"),
     )
-    raw = _require_mapping(snapshot_data, "raw")
     snapshot = AccountSnapshot(
-        auth_mode=_require_string(snapshot_data, "auth_mode"),
-        account_id=_require_string(snapshot_data, "account_id"),
-        last_refresh=_optional_string(snapshot_data, "last_refresh"),
-        raw=dict(raw),
+        auth_mode=parsed_snapshot.auth_mode,
+        account_id=parsed_snapshot.account_id,
+        last_refresh=parsed_snapshot.last_refresh,
+        raw=parsed_snapshot.raw,
     )
-    return TransferAccount(name=_require_string(mapping, "name"), metadata=metadata, snapshot=snapshot)
+    return TransferAccount(name=validated_name, metadata=metadata, snapshot=snapshot)
 
 
 def _load_json_object(data: bytes) -> dict[str, Any]:
     try:
         value = json.loads(data)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         raise InvalidTransferFileError(INVALID_FILE_MESSAGE) from None
     return _require_mapping(value)
 
