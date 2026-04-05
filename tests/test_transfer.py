@@ -221,6 +221,46 @@ def test_decrypt_transfer_archive_rejects_non_iso_exported_at() -> None:
         decrypt_transfer_archive(tampered_blob, passphrase="correct horse battery staple")
 
 
+def test_decrypt_transfer_archive_rejects_date_only_exported_at() -> None:
+    blob = encrypt_transfer_archive([make_transfer_account("work", "acct-work")], passphrase="correct horse battery staple")
+    tampered_blob = rewrite_encrypted_payload(
+        blob,
+        passphrase="correct horse battery staple",
+        mutate_payload=lambda payload: payload.__setitem__("exported_at", "2026-04-05"),
+    )
+
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        decrypt_transfer_archive(tampered_blob, passphrase="correct horse battery staple")
+
+
+def test_decrypt_transfer_archive_rejects_naive_exported_at() -> None:
+    blob = encrypt_transfer_archive([make_transfer_account("work", "acct-work")], passphrase="correct horse battery staple")
+    tampered_blob = rewrite_encrypted_payload(
+        blob,
+        passphrase="correct horse battery staple",
+        mutate_payload=lambda payload: payload.__setitem__("exported_at", "2026-04-05T11:00:00"),
+    )
+
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        decrypt_transfer_archive(tampered_blob, passphrase="correct horse battery staple")
+
+
+def test_encrypt_transfer_archive_rejects_date_only_metadata_timestamp() -> None:
+    account = make_transfer_account("work", "acct-work")
+    account.metadata.created_at = "2026-04-05"
+
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        encrypt_transfer_archive([account], passphrase="correct horse battery staple")
+
+
+def test_encrypt_transfer_archive_rejects_naive_metadata_timestamp() -> None:
+    account = make_transfer_account("work", "acct-work")
+    account.metadata.updated_at = "2026-04-05T10:00:00"
+
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        encrypt_transfer_archive([account], passphrase="correct horse battery staple")
+
+
 def test_decrypt_transfer_archive_rejects_blob_over_size_limit(monkeypatch) -> None:
     blob = encrypt_transfer_archive([make_transfer_account("work", "acct-work")], passphrase="correct horse battery staple")
     monkeypatch.setattr(transfer_module, "MAX_BLOB_BYTES", len(blob) - 1)

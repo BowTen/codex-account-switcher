@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import secrets
 from dataclasses import asdict
 from datetime import datetime
@@ -33,6 +34,7 @@ KDF_PARAMS_V1 = {
     "r": SCRYPT_R,
     "p": SCRYPT_P,
 }
+UTC_TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 PASSHRASE_ERROR_MESSAGE = "invalid passphrase or corrupted file"
 UNSUPPORTED_VERSION_MESSAGE = "unsupported transfer format version"
 INVALID_FILE_MESSAGE = "invalid transfer file"
@@ -307,6 +309,8 @@ def _b64encode(data: bytes) -> str:
 
 
 def _parse_iso_timestamp(value: str) -> datetime:
+    if not UTC_TIMESTAMP_PATTERN.fullmatch(value):
+        raise ValueError("timestamp must use canonical UTC Z format")
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
