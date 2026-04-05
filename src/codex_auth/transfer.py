@@ -1,0 +1,201 @@
+from __future__ import annotations
+
+import base64
+import json
+import secrets
+from dataclasses import asdict
+from typing import Any, Iterable
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+
+from . import __version__
+from .errors import InvalidPassphraseError, InvalidTransferFileError
+from .models import AccountMetadata, AccountSnapshot, TransferAccount, TransferArchive
+
+FORMAT_VERSION = 1
+KDF_NAME = "scrypt"
+CIPHER_NAME = "aesgcm"
+KEY_LENGTH = 32
+SALT_LENGTH = 16
+NONCE_LENGTH = 12
+SCRYPT_N = 2**14
+SCRYPT_R = 8
+SCRYPT_P = 1
+PASSHRASE_ERROR_MESSAGE = "invalid passphrase or corrupted file"
+UNSUPPORTED_VERSION_MESSAGE = "unsupported transfer format version"
+INVALID_FILE_MESSAGE = "invalid transfer file"
+
+
+def encrypt_transfer_archive(
+    accounts: Iterable[TransferAccount],
+    *,
+    passphrase: str,
+    format_version: int = FORMAT_VERSION,
+) -> bytes:
+    salt = secrets.token_bytes(SALT_LENGTH)
+    nonce = secrets.token_bytes(NONCE_LENGTH)
+    key = _build_kdf(salt).derive(passphrase.encode("utf-8"))
+    payload = {
+        "exported_at": None,
+        "tool_version": __version__,
+        "accounts": [_serialize_transfer_account(account) for account in accounts],
+    }
+    plaintext = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext, None)
+    envelope = {
+        "format_version": format_version,
+        "kdf": KDF_NAME,
+        "kdf_params": {
+            "salt": _b64encode(salt),
+            "length": KEY_LENGTH,
+            "n": SCRYPT_N,
+            "r": SCRYPT_R,
+            "p": SCRYPT_P,
+        },
+        "cipher": CIPHER_NAME,
+        "nonce": _b64encode(nonce),
+        "ciphertext": _b64encode(ciphertext),
+    }
+    return json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def decrypt_transfer_archive(blob: bytes, *, passphrase: str) -> TransferArchive:
+    envelope = _load_json_object(blob)
+    format_version = envelope.get("format_version")
+    if format_version != FORMAT_VERSION:
+        raise InvalidTransferFileError(UNSUPPORTED_VERSION_MESSAGE)
+
+    kdf_name = _require_string(envelope, "kdf")
+    if kdf_name != KDF_NAME:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+
+    cipher_name = _require_string(envelope, "cipher")
+    if cipher_name != CIPHER_NAME:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+
+    kdf_params = _require_mapping(envelope, "kdf_params")
+    salt = _b64decode_required(kdf_params, "salt")
+    nonce = _b64decode_required(envelope, "nonce")
+    ciphertext = _b64decode_required(envelope, "ciphertext")
+
+    try:
+        key = _build_kdf(salt, kdf_params).derive(passphrase.encode("utf-8"))
+        plaintext = AESGCM(key).decrypt(nonce, ciphertext, None)
+    except (InvalidTag, ValueError):
+        raise InvalidPassphraseError(PASSHRASE_ERROR_MESSAGE) from None
+
+    payload = _load_json_object(plaintext)
+    accounts_payload = _require_list(payload, "accounts")
+    accounts = [_deserialize_transfer_account(item) for item in accounts_payload]
+    return TransferArchive(
+        format_version=format_version,
+        kdf=kdf_name,
+        kdf_params=dict(kdf_params),
+        cipher=cipher_name,
+        nonce=nonce,
+        ciphertext=ciphertext,
+        accounts=accounts,
+        exported_at=payload.get("exported_at"),
+        tool_version=payload.get("tool_version"),
+    )
+
+
+def _build_kdf(salt: bytes, params: dict[str, Any] | None = None) -> Scrypt:
+    params = params or {}
+    return Scrypt(
+        salt=salt,
+        length=int(params.get("length", KEY_LENGTH)),
+        n=int(params.get("n", SCRYPT_N)),
+        r=int(params.get("r", SCRYPT_R)),
+        p=int(params.get("p", SCRYPT_P)),
+    )
+
+
+def _serialize_transfer_account(account: TransferAccount) -> dict[str, Any]:
+    return {
+        "name": account.name,
+        "metadata": asdict(account.metadata),
+        "snapshot": {
+            "auth_mode": account.snapshot.auth_mode,
+            "account_id": account.snapshot.account_id,
+            "last_refresh": account.snapshot.last_refresh,
+            "raw": account.snapshot.raw,
+        },
+    }
+
+
+def _deserialize_transfer_account(data: Any) -> TransferAccount:
+    mapping = _require_mapping(data)
+    metadata_data = _require_mapping(mapping, "metadata")
+    snapshot_data = _require_mapping(mapping, "snapshot")
+    metadata = AccountMetadata(
+        name=_require_string(metadata_data, "name"),
+        auth_mode=_require_string(metadata_data, "auth_mode"),
+        account_id=_require_string(metadata_data, "account_id"),
+        created_at=_require_string(metadata_data, "created_at"),
+        updated_at=_require_string(metadata_data, "updated_at"),
+        last_refresh=_optional_string(metadata_data, "last_refresh"),
+        last_verified_at=_optional_string(metadata_data, "last_verified_at"),
+    )
+    raw = _require_mapping(snapshot_data, "raw")
+    snapshot = AccountSnapshot(
+        auth_mode=_require_string(snapshot_data, "auth_mode"),
+        account_id=_require_string(snapshot_data, "account_id"),
+        last_refresh=_optional_string(snapshot_data, "last_refresh"),
+        raw=dict(raw),
+    )
+    return TransferAccount(name=_require_string(mapping, "name"), metadata=metadata, snapshot=snapshot)
+
+
+def _load_json_object(data: bytes) -> dict[str, Any]:
+    try:
+        value = json.loads(data)
+    except json.JSONDecodeError:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE) from None
+    return _require_mapping(value)
+
+
+def _require_mapping(data: Any, key: str | None = None) -> dict[str, Any]:
+    value = data if key is None else data.get(key)
+    if not isinstance(value, dict):
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    return value
+
+
+def _require_list(data: Any, key: str) -> list[Any]:
+    value = data.get(key)
+    if not isinstance(value, list):
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    return value
+
+
+def _require_string(data: Any, key: str) -> str:
+    value = data.get(key)
+    if not isinstance(value, str):
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    return value
+
+
+def _optional_string(data: Any, key: str) -> str | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    return value
+
+
+def _b64encode(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def _b64decode_required(data: dict[str, Any], key: str) -> bytes:
+    value = data.get(key)
+    if not isinstance(value, str):
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    try:
+        return base64.b64decode(value.encode("ascii"), validate=True)
+    except (ValueError, UnicodeEncodeError):
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE) from None

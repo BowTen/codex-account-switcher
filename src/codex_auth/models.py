@@ -48,3 +48,30 @@ class UseResult:
     verified: bool
     account_name: str
     verification: VerificationResult
+
+
+@dataclass(slots=True)
+class TransferAccount:
+    name: str
+    metadata: AccountMetadata
+    snapshot: AccountSnapshot
+
+
+@dataclass(slots=True)
+class TransferArchive:
+    format_version: int
+    kdf: str
+    kdf_params: dict[str, Any]
+    cipher: str
+    nonce: bytes
+    ciphertext: bytes
+    accounts: list[TransferAccount]
+    exported_at: str | None = None
+    tool_version: str | None = None
+
+
+@dataclass(slots=True)
+class ImportPlanItem:
+    source_account: TransferAccount
+    target_name: str
+    action: str
