@@ -7,7 +7,7 @@ import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
-from codex_auth.errors import InvalidPassphraseError, InvalidTransferFileError
+from codex_auth.errors import InvalidPassphraseError, InvalidTransferFileError, TransferError
 from codex_auth.models import AccountMetadata, AccountSnapshot, TransferAccount
 from codex_auth import transfer as transfer_module
 from codex_auth.transfer import decrypt_transfer_archive, encrypt_transfer_archive
@@ -135,23 +135,54 @@ def test_decrypt_transfer_archive_rejects_non_utf8_blob_as_invalid_file() -> Non
         decrypt_transfer_archive(b"\xff", passphrase="correct horse battery staple")
 
 
-def test_decrypt_transfer_archive_rejects_invalid_account_name_in_payload() -> None:
+def test_transfer_errors_follow_value_error_hierarchy() -> None:
+    assert issubclass(TransferError, ValueError)
+    assert issubclass(InvalidTransferFileError, ValueError)
+    assert issubclass(InvalidPassphraseError, ValueError)
+
+
+def test_encrypt_transfer_archive_rejects_invalid_account_name() -> None:
     account = make_transfer_account("work", "acct-work")
     account.name = "bad name"
     account.metadata.name = "bad name"
-    blob = encrypt_transfer_archive([account], passphrase="correct horse battery staple")
 
     with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
-        decrypt_transfer_archive(blob, passphrase="correct horse battery staple")
+        encrypt_transfer_archive([account], passphrase="correct horse battery staple")
 
 
-def test_decrypt_transfer_archive_rejects_metadata_identity_drift() -> None:
+def test_encrypt_transfer_archive_rejects_metadata_identity_drift() -> None:
     account = make_transfer_account("work", "acct-work")
     account.metadata.account_id = "acct-other"
-    blob = encrypt_transfer_archive([account], passphrase="correct horse battery staple")
 
     with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
-        decrypt_transfer_archive(blob, passphrase="correct horse battery staple")
+        encrypt_transfer_archive([account], passphrase="correct horse battery staple")
+
+
+def test_decrypt_transfer_archive_rejects_tampered_invalid_account_name_in_payload() -> None:
+    blob = encrypt_transfer_archive([make_transfer_account("work", "acct-work")], passphrase="correct horse battery staple")
+    tampered_blob = rewrite_encrypted_payload(
+        blob,
+        passphrase="correct horse battery staple",
+        mutate_payload=lambda payload: (
+            payload["accounts"][0].__setitem__("name", "bad name"),
+            payload["accounts"][0]["metadata"].__setitem__("name", "bad name"),
+        ),
+    )
+
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        decrypt_transfer_archive(tampered_blob, passphrase="correct horse battery staple")
+
+
+def test_decrypt_transfer_archive_rejects_tampered_metadata_identity_drift() -> None:
+    blob = encrypt_transfer_archive([make_transfer_account("work", "acct-work")], passphrase="correct horse battery staple")
+    tampered_blob = rewrite_encrypted_payload(
+        blob,
+        passphrase="correct horse battery staple",
+        mutate_payload=lambda payload: payload["accounts"][0]["metadata"].__setitem__("account_id", "acct-other"),
+    )
+
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        decrypt_transfer_archive(tampered_blob, passphrase="correct horse battery staple")
 
 
 def test_decrypt_transfer_archive_rejects_invalid_exported_at_type() -> None:

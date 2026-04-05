@@ -139,6 +139,7 @@ def _build_kdf(salt: bytes) -> Scrypt:
 
 
 def _serialize_transfer_account(account: TransferAccount) -> dict[str, Any]:
+    _validate_transfer_account(account)
     return {
         "name": account.name,
         "metadata": asdict(account.metadata),
@@ -198,6 +199,34 @@ def _deserialize_transfer_account(data: Any) -> TransferAccount:
         raw=parsed_snapshot.raw,
     )
     return TransferAccount(name=validated_name, metadata=metadata, snapshot=snapshot)
+
+
+def _validate_transfer_account(account: TransferAccount) -> None:
+    try:
+        validated_name = validate_account_name(account.name)
+        parsed_snapshot = parse_snapshot(account.snapshot.raw)
+        _parse_iso_timestamp(account.metadata.created_at)
+        _parse_iso_timestamp(account.metadata.updated_at)
+        if account.metadata.last_verified_at is not None:
+            _parse_iso_timestamp(account.metadata.last_verified_at)
+    except ValueError:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE) from None
+
+    if account.metadata.name != validated_name:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    if account.metadata.auth_mode != parsed_snapshot.auth_mode:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    if account.metadata.account_id != parsed_snapshot.account_id:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    if account.metadata.last_refresh != parsed_snapshot.last_refresh:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+
+    if account.snapshot.auth_mode != parsed_snapshot.auth_mode:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    if account.snapshot.account_id != parsed_snapshot.account_id:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    if account.snapshot.last_refresh != parsed_snapshot.last_refresh:
+        raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
 
 
 def _validate_optional_metadata_value(value: Any, *, field_name: str) -> str | None:

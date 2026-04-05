@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-class TransferError(Exception):
+class TransferError(ValueError):
     pass
 
 
