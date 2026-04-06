@@ -81,6 +81,8 @@ def build_import_plan(
             continue
 
         if account.name not in existing_names:
+            if account.name in planned_targets:
+                raise ValueError(f"Duplicate import target name: {account.name}")
             planned_targets.add(account.name)
             plan.append(ImportPlanItem(source_name=account.name, target_name=account.name, action="import"))
             continue
@@ -90,6 +92,8 @@ def build_import_plan(
             plan.append(ImportPlanItem(source_name=account.name, target_name=account.name, action="skip"))
             continue
         if action == "overwrite":
+            if account.name in planned_targets:
+                raise ValueError(f"Duplicate import target name: {account.name}")
             planned_targets.add(account.name)
             plan.append(ImportPlanItem(source_name=account.name, target_name=account.name, action="overwrite"))
             continue
@@ -98,7 +102,7 @@ def build_import_plan(
 
         new_name = validate_account_name(prompt_new_account_name(account.name))
         if new_name in existing_names or new_name in planned_targets:
-            raise ValueError(f"Account already exists: {new_name}")
+            raise ValueError(f"Duplicate import target name: {new_name}")
         planned_targets.add(new_name)
         plan.append(ImportPlanItem(source_name=account.name, target_name=new_name, action="rename"))
 

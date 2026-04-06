@@ -189,9 +189,23 @@ def test_build_import_plan_rejects_duplicate_planned_target_names(monkeypatch) -
     monkeypatch.setattr(prompts, "prompt_conflict_action", lambda name: "rename")
     monkeypatch.setattr(prompts, "prompt_new_account_name", lambda source_name: "shared")
 
-    with pytest.raises(ValueError, match="Account already exists: shared"):
+    with pytest.raises(ValueError, match="Duplicate import target name: shared"):
         prompts.build_import_plan(
             archive_accounts,
             existing_accounts,
             {"work", "travel"},
+        )
+
+
+def test_build_import_plan_rejects_duplicate_import_targets_from_repeated_archive_names() -> None:
+    archive_accounts = [
+        make_transfer_account("work", "acct-work-1"),
+        make_transfer_account("work", "acct-work-2"),
+    ]
+
+    with pytest.raises(ValueError, match="Duplicate import target name: work"):
+        prompts.build_import_plan(
+            archive_accounts,
+            [],
+            {"work"},
         )
