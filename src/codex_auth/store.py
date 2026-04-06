@@ -110,42 +110,40 @@ class AccountStore:
         overwritten: list[str] = []
         renamed: list[str] = []
         skipped: list[str] = []
+        prepared_plan: list[tuple[TransferAccount, str, bool]] = []
         seen_targets: set[str] = set()
+        source_ids = {id(account) for account in accounts}
 
         for item in plan:
             source_account = item.source_account
+            if id(source_account) not in source_ids:
+                raise ValueError(f"Unknown import source account: {source_account.name}")
+
             if item.action == "skip":
                 skipped.append(source_account.name)
                 continue
-
-            account = account_by_name.get(source_account.name)
-            if account is None:
-                raise ValueError(f"Unknown import source account: {source_account.name}")
+            if item.action not in {"import", "rename", "overwrite"}:
+                raise ValueError(f"Invalid import action: {item.action}")
             if item.target_name in seen_targets:
                 raise ValueError(f"Duplicate import target name: {item.target_name}")
             seen_targets.add(item.target_name)
+            prepared_plan.append((source_account, item.target_name, item.action == "overwrite"))
 
-        for item in plan:
-            source_account = item.source_account
-            if item.action == "skip":
-                continue
+        for source_account, target_name, force in prepared_plan:
 
-            account = account_by_name[source_account.name]
-
-            force = item.action == "overwrite"
             self.save_snapshot(
-                item.target_name,
-                account.snapshot.raw,
+                target_name,
+                source_account.snapshot.raw,
                 force=force,
                 mark_active=False,
                 ensure_codex_dir=False,
             )
 
-            imported.append(item.target_name)
+            imported.append(target_name)
             if force:
-                overwritten.append(item.target_name)
-            if item.target_name != source_account.name:
-                renamed.append(item.target_name)
+                overwritten.append(target_name)
+            if target_name != source_account.name:
+                renamed.append(target_name)
 
         return ImportResult(
             imported=imported,

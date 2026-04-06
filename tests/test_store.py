@@ -224,6 +224,70 @@ def test_import_snapshots_rejects_duplicate_target_names(tmp_path) -> None:
     assert not store.registry_path.exists()
 
 
+def test_import_snapshots_rejects_invalid_later_plan_item_before_any_writes(tmp_path) -> None:
+    store = AccountStore(tmp_path)
+    work_account = TransferAccount(
+        name="work",
+        metadata=build_metadata("work", parse_snapshot(make_snapshot("acct-work"))),
+        snapshot=parse_snapshot(make_snapshot("acct-work")),
+    )
+    personal_account = TransferAccount(
+        name="personal",
+        metadata=build_metadata("personal", parse_snapshot(make_snapshot("acct-personal"))),
+        snapshot=parse_snapshot(make_snapshot("acct-personal")),
+    )
+    plan = [
+        ImportPlanItem(source_account=work_account, target_name="work-copy", action="rename"),
+        ImportPlanItem(source_account=personal_account, target_name="personal-copy", action="invalid"),
+    ]
+
+    with pytest.raises(ValueError, match="Invalid import action: invalid"):
+        store.import_snapshots([work_account, personal_account], plan)
+
+    assert not store.accounts_dir.exists()
+    assert not store.registry_path.exists()
+
+
+def test_import_snapshots_uses_source_account_binding_from_plan(tmp_path) -> None:
+    store = AccountStore(tmp_path)
+    first_work_account = TransferAccount(
+        name="work",
+        metadata=build_metadata("work", parse_snapshot(make_snapshot("acct-first-work"))),
+        snapshot=parse_snapshot(make_snapshot("acct-first-work")),
+    )
+    second_work_account = TransferAccount(
+        name="work",
+        metadata=build_metadata("work", parse_snapshot(make_snapshot("acct-second-work"))),
+        snapshot=parse_snapshot(make_snapshot("acct-second-work")),
+    )
+    plan = [
+        ImportPlanItem(source_account=first_work_account, target_name="work-copy", action="rename"),
+    ]
+
+    result = store.import_snapshots([first_work_account, second_work_account], plan)
+
+    assert result.imported == ["work-copy"]
+    assert store.load_snapshot("work-copy").account_id == "acct-first-work"
+
+
+def test_import_snapshots_rejects_invalid_action_without_writes(tmp_path) -> None:
+    store = AccountStore(tmp_path)
+    imported_account = TransferAccount(
+        name="travel",
+        metadata=build_metadata("travel", parse_snapshot(make_snapshot("acct-travel"))),
+        snapshot=parse_snapshot(make_snapshot("acct-travel")),
+    )
+    plan = [
+        ImportPlanItem(source_account=imported_account, target_name="travel", action="archive"),
+    ]
+
+    with pytest.raises(ValueError, match="Invalid import action: archive"):
+        store.import_snapshots([imported_account], plan)
+
+    assert not store.accounts_dir.exists()
+    assert not store.registry_path.exists()
+
+
 def test_import_snapshots_does_not_create_codex_dir(tmp_path) -> None:
     store = AccountStore(tmp_path)
     imported_account = TransferAccount(
