@@ -138,19 +138,17 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "export":
             prompts.require_interactive("export")
-            selected_names = prompts.prompt_select_saved_accounts(
-                service.list_accounts(),
-                message="Select accounts to export",
-            )
+            passphrase = read_passphrase_from_file(args.passphrase_file) if args.passphrase_file else None
+            accounts = service.list_accounts()
+            if not accounts:
+                raise ValueError("No saved accounts available for export")
+            selected_names = prompts.prompt_select_saved_accounts(accounts, message="Select accounts to export")
             if not selected_names:
                 print("cancelled: export", file=sys.stderr)
                 return CANCELLED_EXIT_CODE
             output_path = prompts.prompt_export_path(Path.cwd() / "codex-auth-export.cae")
-            passphrase = (
-                read_passphrase_from_file(args.passphrase_file)
-                if args.passphrase_file
-                else prompts.prompt_passphrase(confirm=True)
-            )
+            if passphrase is None:
+                passphrase = prompts.prompt_passphrase(confirm=True)
             service.write_export_archive(selected_names, output_path, passphrase=passphrase)
             print(f"exported: {len(selected_names)} accounts -> {output_path}")
             return 0
@@ -163,6 +161,8 @@ def main(argv: list[str] | None = None) -> int:
                 else prompts.prompt_passphrase(confirm=False)
             )
             archive = service.read_import_archive(args.file, passphrase=passphrase)
+            if not archive.accounts:
+                raise ValueError("No accounts available in import archive")
             selected_names = prompts.prompt_select_archive_accounts(archive.accounts)
             if not selected_names:
                 print("cancelled: import", file=sys.stderr)

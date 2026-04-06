@@ -11,6 +11,7 @@ from codex_auth.errors import InteractiveRequiredError
 from codex_auth.models import AccountMetadata, ImportPlanItem, TransferAccount
 from codex_auth import prompts
 from codex_auth.service import CodexAuthService
+from codex_auth.transfer import encrypt_transfer_archive
 
 
 class _FakePrompt:
@@ -393,6 +394,25 @@ def test_cli_export_empty_selection_is_cancellation(tmp_path, monkeypatch, capsy
     assert "cancelled: export" in captured.err
 
 
+def test_cli_export_with_no_saved_accounts_is_an_error(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    pass_file = tmp_path / "pass.txt"
+    pass_file.write_text("secret-pass\n")
+
+    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
+    monkeypatch.setattr(
+        "codex_auth.prompts.prompt_select_saved_accounts",
+        lambda accounts, message: (_ for _ in ()).throw(AssertionError("selection prompt should not run")),
+    )
+
+    result = cli_main(["export", "--passphrase-file", str(pass_file)])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert captured.out == ""
+    assert "error: No saved accounts available for export" in captured.err
+
+
 def test_cli_export_reports_missing_passphrase_file_concisely(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     service = CodexAuthService()
@@ -405,6 +425,30 @@ def test_cli_export_reports_missing_passphrase_file_concisely(tmp_path, monkeypa
         lambda accounts, message: ["work"],
     )
     monkeypatch.setattr("codex_auth.prompts.prompt_export_path", lambda default_path: tmp_path / "accounts.cae")
+
+    result = cli_main(["export", "--passphrase-file", str(missing_pass_file)])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert captured.out == ""
+    assert f"error: [Errno 2] No such file or directory: '{missing_pass_file}'" in captured.err
+
+
+def test_cli_export_validates_passphrase_file_before_prompting(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    service = CodexAuthService()
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    missing_pass_file = tmp_path / "missing-pass.txt"
+
+    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
+    monkeypatch.setattr(
+        "codex_auth.prompts.prompt_select_saved_accounts",
+        lambda accounts, message: (_ for _ in ()).throw(AssertionError("selection prompt should not run")),
+    )
+    monkeypatch.setattr(
+        "codex_auth.prompts.prompt_export_path",
+        lambda default_path: (_ for _ in ()).throw(AssertionError("path prompt should not run")),
+    )
 
     result = cli_main(["export", "--passphrase-file", str(missing_pass_file)])
     captured = capsys.readouterr()
@@ -471,6 +515,34 @@ def test_cli_import_empty_selection_is_cancellation(tmp_path, monkeypatch, capsy
     assert result == 3
     assert captured.out == ""
     assert "cancelled: import" in captured.err
+
+
+def test_cli_import_with_empty_archive_is_an_error(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    archive_path = tmp_path / "empty-accounts.cae"
+    archive_path.write_bytes(
+        encrypt_transfer_archive(
+            [],
+            passphrase="secret-pass",
+            exported_at="2026-04-05T10:00:00Z",
+            tool_version="0.1.0",
+        )
+    )
+    pass_file = tmp_path / "pass.txt"
+    pass_file.write_text("secret-pass\n")
+
+    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
+    monkeypatch.setattr(
+        "codex_auth.prompts.prompt_select_archive_accounts",
+        lambda accounts: (_ for _ in ()).throw(AssertionError("selection prompt should not run")),
+    )
+
+    result = cli_main(["import", str(archive_path), "--passphrase-file", str(pass_file)])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert captured.out == ""
+    assert "error: No accounts available in import archive" in captured.err
 
 
 def test_cli_import_applies_selected_accounts(tmp_path, monkeypatch, capsys) -> None:
