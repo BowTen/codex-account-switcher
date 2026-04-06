@@ -1,20 +1,25 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  Tech stack: Python 3.12 CLI application managed with uv.
+  Entry point: codex-auth manages local Codex auth.json account snapshots.
+  Current main capabilities: account-snapshots, account-switching, account-transfer.
+  Testing: use uv run pytest.
+  Packaging: version is kept in pyproject.toml and src/codex_auth/__init__.py.
+  Git conventions: use conventional-style commit subjects.
+  Development constraints:
+    - Prefer small, reviewable OpenSpec changes.
+    - Use OpenSpec for new features, behavior changes, and meaningful bug fixes.
+    - Doc-only or tooling-only changes may archive with --skip-specs when no requirement changes are involved.
+    - Keep secrets and real auth snapshots out of the repository.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+rules:
+  proposal:
+    - Keep the proposal concise and explicit about whether specs are added or modified.
+    - State non-goals whenever a change could be confused with account switching, transfer, or storage behavior outside its scope.
+  design:
+    - Focus on CLI behavior, storage semantics, and migration or security implications when they matter.
+    - Avoid restating implementation details that do not affect operator-visible behavior or maintainability.
+  tasks:
+    - Break tasks into small, verifiable steps that can usually be finished in one focused session.
+    - Include explicit verification tasks when commands, storage behavior, or transfer flows change.

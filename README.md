@@ -63,6 +63,25 @@ codex-auth doctor
 uv run pytest -v
 ```
 
+## OpenSpec 工作流
+
+本仓库现在使用 OpenSpec 持续维护需求和变更。
+
+- 当前主规格位于 `openspec/specs/`。
+- 已完成的历史补录和后续变更归档位于 `openspec/changes/archive/`。
+- 新功能、行为变更、以及重要 bugfix 建议先创建一个新的 OpenSpec change，再进入实现。
+- 纯文档或纯工具链整理、且不涉及 requirement 变化时，可以在归档时使用 `openspec archive --skip-specs`。
+
+常用流程：
+
+```bash
+openspec list --json
+openspec new change <name>
+openspec status --change <name>
+openspec validate <name>
+openspec archive <name>
+```
+
 ## 开源说明
 
 本仓库以公开方式维护，欢迎通过议题或合并请求提交问题、改进建议和实现修复。
