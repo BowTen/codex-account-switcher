@@ -348,6 +348,27 @@ def test_cli_export_writes_encrypted_transfer_file(tmp_path, monkeypatch, capsys
     assert f"exported: 2 accounts -> {output_path}" in captured.out
 
 
+def test_cli_export_reports_missing_passphrase_file_concisely(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    service = CodexAuthService()
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    missing_pass_file = tmp_path / "missing-pass.txt"
+
+    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
+    monkeypatch.setattr(
+        "codex_auth.prompts.prompt_select_saved_accounts",
+        lambda accounts, message: ["work"],
+    )
+    monkeypatch.setattr("codex_auth.prompts.prompt_export_path", lambda default_path: tmp_path / "accounts.cae")
+
+    result = cli_main(["export", "--passphrase-file", str(missing_pass_file)])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert captured.out == ""
+    assert f"error: [Errno 2] No such file or directory: '{missing_pass_file}'" in captured.err
+
+
 def test_cli_import_requires_interactive_terminal_even_with_passphrase_file(
     tmp_path,
     monkeypatch,
@@ -368,6 +389,43 @@ def test_cli_import_requires_interactive_terminal_even_with_passphrase_file(
     assert result == 1
     assert captured.out == ""
     assert "error: import requires an interactive terminal" in captured.err
+
+
+def test_cli_import_reports_missing_archive_file_concisely(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    archive_path = tmp_path / "missing-accounts.cae"
+    pass_file = tmp_path / "pass.txt"
+    pass_file.write_text("secret-pass\n")
+
+    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
+
+    result = cli_main(["import", str(archive_path), "--passphrase-file", str(pass_file)])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert captured.out == ""
+    assert f"error: [Errno 2] No such file or directory: '{archive_path}'" in captured.err
+
+
+def test_cli_import_rejects_empty_selection(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source_home = tmp_path / "source-home"
+    source_service = CodexAuthService(home=source_home)
+    source_service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    archive_path = tmp_path / "accounts.cae"
+    pass_file = tmp_path / "pass.txt"
+    pass_file.write_text("secret-pass\n")
+    source_service.write_export_archive(["work"], archive_path, passphrase="secret-pass")
+
+    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
+    monkeypatch.setattr("codex_auth.prompts.prompt_select_archive_accounts", lambda accounts: [])
+
+    result = cli_main(["import", str(archive_path), "--passphrase-file", str(pass_file)])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert captured.out == ""
+    assert "error: No accounts selected for import" in captured.err
 
 
 def test_cli_import_applies_selected_accounts(tmp_path, monkeypatch, capsys) -> None:

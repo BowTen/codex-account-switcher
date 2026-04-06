@@ -158,8 +158,10 @@ def main(argv: list[str] | None = None) -> int:
                 else prompts.prompt_passphrase(confirm=False)
             )
             archive = service.read_import_archive(args.file, passphrase=passphrase)
-            selected_names = set(prompts.prompt_select_archive_accounts(archive.accounts))
-            plan = prompts.build_import_plan(archive.accounts, service.list_accounts(), selected_names)
+            selected_names = prompts.prompt_select_archive_accounts(archive.accounts)
+            if not selected_names:
+                raise ValueError("No accounts selected for import")
+            plan = prompts.build_import_plan(archive.accounts, service.list_accounts(), set(selected_names))
             result = service.apply_import_archive(archive, plan)
             print_name_list("imported", result.imported)
             print_name_list("skipped", result.skipped)
@@ -170,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "doctor":
             print_kv_map(service.doctor())
             return 0
-    except (ValueError, TransferError) as exc:
+    except (OSError, ValueError, TransferError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
