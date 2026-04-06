@@ -79,10 +79,14 @@ def confirm_removal(name: str) -> bool:
 
 
 def read_passphrase_from_file(path: str) -> str:
-    content = Path(path).read_text().splitlines()
-    if not content or not content[0].strip():
+    content = Path(path).read_text()
+    if content.endswith("\r\n"):
+        content = content[:-2]
+    elif content.endswith("\n") or content.endswith("\r"):
+        content = content[:-1]
+    if content == "":
         raise ValueError(f"Passphrase file is empty: {path}")
-    return content[0].strip()
+    return content
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -139,7 +143,8 @@ def main(argv: list[str] | None = None) -> int:
                 message="Select accounts to export",
             )
             if not selected_names:
-                raise ValueError("No accounts selected for export")
+                print("cancelled: export", file=sys.stderr)
+                return CANCELLED_EXIT_CODE
             output_path = prompts.prompt_export_path(Path.cwd() / "codex-auth-export.cae")
             passphrase = (
                 read_passphrase_from_file(args.passphrase_file)
@@ -160,7 +165,8 @@ def main(argv: list[str] | None = None) -> int:
             archive = service.read_import_archive(args.file, passphrase=passphrase)
             selected_names = prompts.prompt_select_archive_accounts(archive.accounts)
             if not selected_names:
-                raise ValueError("No accounts selected for import")
+                print("cancelled: import", file=sys.stderr)
+                return CANCELLED_EXIT_CODE
             plan = prompts.build_import_plan(archive.accounts, service.list_accounts(), set(selected_names))
             result = service.apply_import_archive(archive, plan)
             print_name_list("imported", result.imported)
