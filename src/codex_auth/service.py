@@ -7,6 +7,7 @@ import stat
 from pathlib import Path
 from typing import Mapping
 
+from . import __version__
 from .codex_cli import run_login_status
 from .models import AccountMetadata, ImportPlanItem, ImportResult, TransferAccount, TransferArchive, UseResult
 from .store import AccountStore
@@ -74,15 +75,9 @@ class CodexAuthService:
             )
 
         return TransferArchive(
-            format_version=1,
-            kdf="export",
-            kdf_params={},
-            cipher="none",
-            nonce=b"",
-            ciphertext=b"",
             accounts=accounts,
             exported_at=utc_now_iso(),
-            tool_version="0.1.0",
+            tool_version=__version__,
         )
 
     def apply_import_archive(

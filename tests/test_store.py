@@ -220,6 +220,9 @@ def test_import_snapshots_rejects_duplicate_target_names(tmp_path) -> None:
     with pytest.raises(ValueError, match="Duplicate import target name: shared"):
         store.import_snapshots([work_account, personal_account], plan)
 
+    assert not store.accounts_dir.exists()
+    assert not store.registry_path.exists()
+
 
 def test_import_snapshots_does_not_create_codex_dir(tmp_path) -> None:
     store = AccountStore(tmp_path)

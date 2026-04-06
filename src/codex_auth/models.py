@@ -59,12 +59,6 @@ class TransferAccount:
 
 @dataclass(slots=True)
 class TransferArchive:
-    format_version: int
-    kdf: str
-    kdf_params: dict[str, Any]
-    cipher: str
-    nonce: bytes
-    ciphertext: bytes
     accounts: list[TransferAccount]
     exported_at: str | None = None
     tool_version: str | None = None

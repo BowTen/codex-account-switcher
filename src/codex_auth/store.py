@@ -118,13 +118,19 @@ class AccountStore:
                 skipped.append(source_account.name)
                 continue
 
+            account = account_by_name.get(source_account.name)
+            if account is None:
+                raise ValueError(f"Unknown import source account: {source_account.name}")
             if item.target_name in seen_targets:
                 raise ValueError(f"Duplicate import target name: {item.target_name}")
             seen_targets.add(item.target_name)
 
-            account = account_by_name.get(source_account.name)
-            if account is None:
-                raise ValueError(f"Unknown import source account: {source_account.name}")
+        for item in plan:
+            source_account = item.source_account
+            if item.action == "skip":
+                continue
+
+            account = account_by_name[source_account.name]
 
             force = item.action == "overwrite"
             self.save_snapshot(

@@ -118,12 +118,6 @@ def decrypt_transfer_archive(blob: bytes, *, passphrase: str) -> TransferArchive
         raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
     accounts = [_deserialize_transfer_account(item) for item in accounts_payload]
     return TransferArchive(
-        format_version=format_version,
-        kdf=kdf_name,
-        kdf_params=dict(kdf_params),
-        cipher=cipher_name,
-        nonce=nonce,
-        ciphertext=ciphertext,
         accounts=accounts,
         exported_at=_optional_timestamp_string(payload, "exported_at"),
         tool_version=_optional_string(payload, "tool_version"),

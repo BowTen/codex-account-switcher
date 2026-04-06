@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+from codex_auth import __version__
 from codex_auth.models import ImportPlanItem, TransferAccount, TransferArchive
 from codex_auth.service import CodexAuthService
 from codex_auth.validators import build_metadata, parse_snapshot
@@ -139,6 +140,8 @@ def test_build_export_archive_includes_only_selected_accounts(tmp_path) -> None:
 
     assert [account.name for account in archive.accounts] == ["work"]
     assert archive.accounts[0].snapshot.raw["tokens"]["account_id"] == "acct-work"
+    assert archive.exported_at is not None
+    assert archive.tool_version == __version__
 
 
 def test_apply_import_archive_writes_selected_accounts_without_touching_live_auth(tmp_path) -> None:
@@ -159,15 +162,9 @@ def test_apply_import_archive_writes_selected_accounts_without_touching_live_aut
         snapshot=parse_snapshot(make_snapshot("acct-travel")),
     )
     archive = TransferArchive(
-        format_version=1,
-        kdf="scrypt",
-        kdf_params={"length": 32, "n": 16384, "r": 8, "p": 1},
-        cipher="aesgcm",
-        nonce=b"123456789012",
-        ciphertext=b"ciphertext",
-        accounts=[work_account, travel_account],
         exported_at="2026-04-05T10:00:00Z",
         tool_version="0.1.0",
+        accounts=[work_account, travel_account],
     )
     plan = [
         ImportPlanItem(source_account=work_account, target_name="work", action="overwrite"),

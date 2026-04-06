@@ -74,9 +74,6 @@ def test_encrypt_and_decrypt_transfer_archive_round_trip() -> None:
     )
     restored = decrypt_transfer_archive(blob, passphrase="correct horse battery staple")
 
-    assert restored.format_version == 1
-    assert restored.kdf == "scrypt"
-    assert restored.cipher == "aesgcm"
     assert restored.exported_at == "2026-04-05T11:00:00Z"
     assert restored.tool_version == "0.1.0-test"
     assert [account.name for account in restored.accounts] == ["work", "personal"]
