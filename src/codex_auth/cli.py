@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
+from . import prompts
+from .errors import TransferError
 from .service import CodexAuthService
 
 
@@ -46,6 +49,13 @@ def build_parser() -> argparse.ArgumentParser:
     rm_parser.add_argument("--yes", action="store_true")
     rm_parser.add_argument("--force-current", action="store_true")
 
+    export_parser = subparsers.add_parser("export", help="Export saved accounts into an encrypted transfer file.")
+    export_parser.add_argument("--passphrase-file")
+
+    import_parser = subparsers.add_parser("import", help="Import saved accounts from an encrypted transfer file.")
+    import_parser.add_argument("file")
+    import_parser.add_argument("--passphrase-file")
+
     subparsers.add_parser("doctor", help="Inspect local Codex and store state.")
     return parser
 
@@ -61,6 +71,13 @@ def confirm_removal(name: str) -> bool:
     except EOFError:
         return False
     return response in {"y", "yes"}
+
+
+def read_passphrase_from_file(path: str) -> str:
+    content = Path(path).read_text().splitlines()
+    if not content or not content[0].strip():
+        raise ValueError(f"Passphrase file is empty: {path}")
+    return content[0].strip()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -110,10 +127,42 @@ def main(argv: list[str] | None = None) -> int:
             print(f"removed: {args.name}")
             return 0
 
+        if args.command == "export":
+            prompts.require_interactive("export")
+            selected_names = prompts.prompt_select_saved_accounts(
+                service.list_accounts(),
+                message="Select accounts to export",
+            )
+            if not selected_names:
+                raise ValueError("No accounts selected for export")
+            output_path = prompts.prompt_export_path(Path.cwd() / "codex-auth-export.cae")
+            passphrase = (
+                read_passphrase_from_file(args.passphrase_file)
+                if args.passphrase_file
+                else prompts.prompt_passphrase(confirm=True)
+            )
+            service.write_export_archive(selected_names, output_path, passphrase=passphrase)
+            print(f"exported: {len(selected_names)} accounts -> {output_path}")
+            return 0
+
+        if args.command == "import":
+            prompts.require_interactive("import")
+            passphrase = (
+                read_passphrase_from_file(args.passphrase_file)
+                if args.passphrase_file
+                else prompts.prompt_passphrase(confirm=False)
+            )
+            archive = service.read_import_archive(args.file, passphrase=passphrase)
+            selected_names = set(prompts.prompt_select_archive_accounts(archive.accounts))
+            plan = prompts.build_import_plan(archive.accounts, service.list_accounts(), selected_names)
+            result = service.apply_import_archive(archive, plan)
+            print(f"imported: {', '.join(result.imported)}")
+            return 0
+
         if args.command == "doctor":
             print_kv_map(service.doctor())
             return 0
-    except ValueError as exc:
+    except (ValueError, TransferError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

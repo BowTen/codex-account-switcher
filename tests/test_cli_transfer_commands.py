@@ -6,9 +6,11 @@ from pathlib import Path
 
 import pytest
 
+from codex_auth.cli import main as cli_main
 from codex_auth.errors import InteractiveRequiredError
 from codex_auth.models import AccountMetadata, ImportPlanItem, TransferAccount
 from codex_auth import prompts
+from codex_auth.service import CodexAuthService
 
 
 class _FakePrompt:
@@ -60,6 +62,19 @@ def make_transfer_account(name: str, account_id: str) -> TransferAccount:
             }
         ),
     )
+
+
+def make_snapshot(account_id: str) -> dict[str, object]:
+    return {
+        "auth_mode": "chatgpt",
+        "last_refresh": "2026-04-04T10:00:00Z",
+        "tokens": {
+            "access_token": f"access-{account_id}",
+            "refresh_token": f"refresh-{account_id}",
+            "id_token": f"id-{account_id}",
+            "account_id": account_id,
+        },
+    }
 
 
 def test_require_interactive_rejects_noninteractive_stdin() -> None:
@@ -293,3 +308,101 @@ def test_build_import_plan_rejects_duplicate_import_targets_from_repeated_archiv
             [],
             {"work"},
         )
+
+
+def test_cli_export_requires_interactive_terminal(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    pass_file = tmp_path / "pass.txt"
+    pass_file.write_text("secret-pass\n")
+
+    result = cli_main(["export", "--passphrase-file", str(pass_file)])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert captured.out == ""
+    assert "error: export requires an interactive terminal" in captured.err
+
+
+def test_cli_export_writes_encrypted_transfer_file(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    service = CodexAuthService()
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    service.store.save_snapshot("personal", make_snapshot("acct-personal"), force=False, mark_active=False)
+    output_path = tmp_path / "accounts.cae"
+    pass_file = tmp_path / "pass.txt"
+    pass_file.write_text("secret-pass\n")
+
+    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
+    monkeypatch.setattr(
+        "codex_auth.prompts.prompt_select_saved_accounts",
+        lambda accounts, message: ["work", "personal"],
+    )
+    monkeypatch.setattr("codex_auth.prompts.prompt_export_path", lambda default_path: output_path)
+
+    result = cli_main(["export", "--passphrase-file", str(pass_file)])
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert output_path.exists()
+    assert captured.err == ""
+    assert f"exported: 2 accounts -> {output_path}" in captured.out
+
+
+def test_cli_import_requires_interactive_terminal_even_with_passphrase_file(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source_home = tmp_path / "source-home"
+    service = CodexAuthService(home=source_home)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    archive_path = tmp_path / "accounts.cae"
+    pass_file = tmp_path / "pass.txt"
+    pass_file.write_text("secret-pass\n")
+    service.write_export_archive(["work"], archive_path, passphrase="secret-pass")
+
+    result = cli_main(["import", str(archive_path), "--passphrase-file", str(pass_file)])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert captured.out == ""
+    assert "error: import requires an interactive terminal" in captured.err
+
+
+def test_cli_import_applies_selected_accounts(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source_home = tmp_path / "source-home"
+    source_service = CodexAuthService(home=source_home)
+    source_service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    source_service.store.save_snapshot("travel", make_snapshot("acct-travel"), force=False, mark_active=False)
+    archive_path = tmp_path / "accounts.cae"
+    pass_file = tmp_path / "pass.txt"
+    pass_file.write_text("secret-pass\n")
+    source_service.write_export_archive(["work", "travel"], archive_path, passphrase="secret-pass")
+
+    target_service = CodexAuthService()
+    target_service.store.save_snapshot("work", make_snapshot("acct-existing-work"), force=False, mark_active=True)
+    live_before = make_snapshot("acct-live")
+    target_service.store.write_live_auth(live_before)
+
+    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
+    monkeypatch.setattr("codex_auth.prompts.prompt_select_archive_accounts", lambda accounts: ["work", "travel"])
+    monkeypatch.setattr(
+        "codex_auth.prompts.build_import_plan",
+        lambda archive_accounts, existing_accounts, selected_names: [
+            ImportPlanItem(source_name="work", target_name="work", action="overwrite"),
+            ImportPlanItem(source_name="travel", target_name="vacation", action="rename"),
+        ],
+    )
+
+    result = cli_main(["import", str(archive_path), "--passphrase-file", str(pass_file)])
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert captured.err == ""
+    assert "imported: work, vacation" in captured.out
+    assert target_service.store.load_snapshot("work").account_id == "acct-work"
+    assert target_service.store.load_snapshot("vacation").account_id == "acct-travel"
+    assert target_service.store.read_live_auth() == live_before
+    assert target_service.store.current_active_name() == "work"
