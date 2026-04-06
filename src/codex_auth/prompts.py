@@ -12,10 +12,17 @@ from .models import AccountMetadata, ImportPlanItem, TransferAccount
 from .validators import validate_account_name
 
 
-def require_interactive(command_name: str, *, stdin: TextIO | None = None) -> None:
+def require_interactive(
+    command_name: str,
+    *,
+    stdin: TextIO | None = None,
+    stdout: TextIO | None = None,
+) -> None:
     if stdin is None:
         stdin = sys.stdin
-    if not stdin.isatty():
+    if stdout is None:
+        stdout = sys.stdout
+    if not stdin.isatty() or not stdout.isatty():
         raise InteractiveRequiredError(f"{command_name} requires an interactive terminal")
 
 
@@ -55,10 +62,18 @@ def prompt_export_path(default_path: Path) -> Path:
 
 
 def prompt_passphrase(*, confirm: bool) -> str:
-    first = inquirer.secret(message="Passphrase").execute()
+    first = inquirer.secret(
+        message="Passphrase",
+        validate=_validate_passphrase_text,
+        invalid_message="Passphrase cannot be blank",
+    ).execute()
     if not confirm:
         return first
-    second = inquirer.secret(message="Confirm passphrase").execute()
+    second = inquirer.secret(
+        message="Confirm passphrase",
+        validate=_validate_passphrase_text,
+        invalid_message="Passphrase cannot be blank",
+    ).execute()
     if first != second:
         raise ValueError("Passphrases do not match")
     return first
@@ -125,6 +140,10 @@ def build_import_plan(
 
 
 def _validate_nonempty_text(value: str) -> bool:
+    return bool(value.strip())
+
+
+def _validate_passphrase_text(value: str) -> bool:
     return bool(value.strip())
 
 

@@ -55,6 +55,7 @@ def encrypt_transfer_archive(
     if len(accounts) > MAX_ACCOUNT_COUNT:
         raise ValueError("too many accounts for transfer archive")
     _validate_unique_account_names(accounts)
+    _validate_passphrase_text(passphrase)
 
     salt = secrets.token_bytes(SALT_LENGTH)
     nonce = secrets.token_bytes(NONCE_LENGTH)
@@ -86,6 +87,7 @@ def encrypt_transfer_archive(
 def decrypt_transfer_archive(blob: bytes, *, passphrase: str) -> TransferArchive:
     if len(blob) > MAX_BLOB_BYTES:
         raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+    _validate_passphrase_text(passphrase)
 
     envelope = _load_json_object(blob)
     format_version = envelope.get("format_version")
@@ -233,6 +235,11 @@ def _validate_unique_account_names(accounts: Iterable[TransferAccount]) -> None:
         if account.name in seen_names:
             raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
         seen_names.add(account.name)
+
+
+def _validate_passphrase_text(passphrase: str) -> None:
+    if not passphrase.strip():
+        raise ValueError("passphrase must not be blank")
 
 
 def _validate_optional_metadata_value(value: Any, *, field_name: str) -> str | None:

@@ -81,11 +81,35 @@ def test_encrypt_and_decrypt_transfer_archive_round_trip() -> None:
     assert restored.accounts[1].snapshot.raw["tokens"]["refresh_token"] == "refresh-acct-personal"
 
 
+def test_encrypt_and_decrypt_transfer_archive_preserves_whitespace_surrounded_passphrase() -> None:
+    payload = [make_transfer_account("work", "acct-work")]
+    passphrase = "  correct horse battery staple  "
+
+    blob = encrypt_transfer_archive(payload, passphrase=passphrase)
+    restored = decrypt_transfer_archive(blob, passphrase=passphrase)
+
+    assert [account.name for account in restored.accounts] == ["work"]
+
+
+@pytest.mark.parametrize("passphrase", ["", "   "])
+def test_encrypt_transfer_archive_rejects_blank_passphrase(passphrase: str) -> None:
+    with pytest.raises(ValueError, match="passphrase must not be blank"):
+        encrypt_transfer_archive([make_transfer_account("work", "acct-work")], passphrase=passphrase)
+
+
 def test_decrypt_transfer_archive_rejects_wrong_passphrase() -> None:
     blob = encrypt_transfer_archive([make_transfer_account("work", "acct-work")], passphrase="correct horse battery staple")
 
     with pytest.raises(InvalidPassphraseError, match="invalid passphrase or corrupted file"):
         decrypt_transfer_archive(blob, passphrase="wrong passphrase")
+
+
+@pytest.mark.parametrize("passphrase", ["", "   "])
+def test_decrypt_transfer_archive_rejects_blank_passphrase(passphrase: str) -> None:
+    blob = encrypt_transfer_archive([make_transfer_account("work", "acct-work")], passphrase="correct horse battery staple")
+
+    with pytest.raises(ValueError, match="passphrase must not be blank"):
+        decrypt_transfer_archive(blob, passphrase=passphrase)
 
 
 def test_decrypt_transfer_archive_rejects_duplicate_account_names() -> None:

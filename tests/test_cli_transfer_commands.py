@@ -104,6 +104,23 @@ def test_require_interactive_uses_sys_stdin_at_call_time(monkeypatch) -> None:
         reloaded_prompts.require_interactive("export")
 
 
+def test_require_interactive_rejects_noninteractive_stdout(monkeypatch) -> None:
+    class InteractiveStream:
+        def isatty(self) -> bool:
+            return True
+
+    class NonInteractiveStream:
+        def isatty(self) -> bool:
+            return False
+
+    monkeypatch.setattr(sys, "stdin", InteractiveStream())
+    reloaded_prompts = importlib.reload(prompts)
+    monkeypatch.setattr(sys, "stdout", NonInteractiveStream())
+
+    with pytest.raises(InteractiveRequiredError, match="export requires an interactive terminal"):
+        reloaded_prompts.require_interactive("export")
+
+
 def test_prompt_select_saved_accounts_uses_inquirer_checkbox(monkeypatch) -> None:
     accounts = [make_metadata("work", "acct-work"), make_metadata("personal", "acct-personal")]
     captured = {}
@@ -190,9 +207,9 @@ def test_prompt_export_path_rejects_blank_input_before_accepting_value(monkeypat
 def test_prompt_passphrase_confirms_matching_values(monkeypatch) -> None:
     prompts_seen: list[str] = []
 
-    def fake_secret(*, message):  # type: ignore[no-untyped-def]
+    def fake_secret(*, message, validate=None, invalid_message=None, filter=None, **kwargs):  # type: ignore[no-untyped-def]
         prompts_seen.append(message)
-        return _FakePrompt("correct horse battery staple")
+        return _FakePrompt("correct horse battery staple", validate=validate, filter=filter)
 
     monkeypatch.setattr(prompts.inquirer, "secret", fake_secret)
 
@@ -205,13 +222,36 @@ def test_prompt_passphrase_confirms_matching_values(monkeypatch) -> None:
 def test_prompt_passphrase_rejects_mismatched_confirmation(monkeypatch) -> None:
     responses = iter(["one", "two"])
 
-    def fake_secret(*, message):  # type: ignore[no-untyped-def]
-        return _FakePrompt(next(responses))
+    def fake_secret(*, message, validate=None, invalid_message=None, filter=None, **kwargs):  # type: ignore[no-untyped-def]
+        return _FakePrompt(next(responses), validate=validate, filter=filter)
 
     monkeypatch.setattr(prompts.inquirer, "secret", fake_secret)
 
     with pytest.raises(ValueError, match="Passphrases do not match"):
         prompts.prompt_passphrase(confirm=True)
+
+
+def test_prompt_passphrase_rejects_blank_input_before_accepting_spaced_value(monkeypatch) -> None:
+    captured = {}
+
+    def fake_secret(*, message, validate=None, invalid_message=None, filter=None, **kwargs):  # type: ignore[no-untyped-def]
+        captured[message] = {
+            "validate": validate,
+            "invalid_message": invalid_message,
+            "filter": filter,
+        }
+        if message == "Passphrase":
+            return _FakePrompt(responses=["   ", "  secret  "], validate=validate, filter=filter)
+        return _FakePrompt("  secret  ", filter=filter)
+
+    monkeypatch.setattr(prompts.inquirer, "secret", fake_secret)
+
+    result = prompts.prompt_passphrase(confirm=True)
+
+    assert result == "  secret  "
+    assert captured["Passphrase"]["validate"] is not None
+    assert captured["Passphrase"]["invalid_message"]
+    assert captured["Confirm passphrase"]["validate"] is not None
 
 
 def test_prompt_new_account_name_rejects_blank_and_invalid_input(monkeypatch) -> None:
@@ -371,6 +411,27 @@ def test_cli_export_preserves_passphrase_file_whitespace(tmp_path, monkeypatch, 
     assert result == 0
     assert captured.err == ""
     assert service.read_import_archive(output_path, passphrase=passphrase).accounts[0].name == "work"
+
+
+def test_cli_export_rejects_whitespace_only_passphrase_file(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    service = CodexAuthService()
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    output_path = tmp_path / "accounts.cae"
+    pass_file = tmp_path / "pass.txt"
+    pass_file.write_text("   \n")
+
+    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
+    monkeypatch.setattr("codex_auth.prompts.prompt_select_saved_accounts", lambda accounts, message: ["work"])
+    monkeypatch.setattr("codex_auth.prompts.prompt_export_path", lambda default_path: output_path)
+
+    result = cli_main(["export", "--passphrase-file", str(pass_file)])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert captured.out == ""
+    assert "error: Passphrase file must not be blank: " in captured.err
+    assert not output_path.exists()
 
 
 def test_cli_export_empty_selection_is_cancellation(tmp_path, monkeypatch, capsys) -> None:

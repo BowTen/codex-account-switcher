@@ -86,8 +86,8 @@ def resolve_cli_path(path: str) -> Path:
 def read_passphrase_from_file(path: str) -> str:
     content = resolve_cli_path(path).read_text()
     lines = content.splitlines()
-    if not lines or lines[0] == "":
-        raise ValueError(f"Passphrase file is empty: {path}")
+    if not lines or not lines[0].strip():
+        raise ValueError(f"Passphrase file must not be blank: {path}")
     if any(line.strip() for line in lines[1:]):
         raise ValueError(f"Passphrase file must contain a single non-empty line: {path}")
     return lines[0]
