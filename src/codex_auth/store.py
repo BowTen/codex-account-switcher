@@ -124,6 +124,10 @@ class AccountStore:
             source_account = account_by_name.get(item.source_name)
             if source_account is None:
                 raise ValueError(f"Unknown import source account: {item.source_name}")
+            try:
+                self._validate_import_source_account(source_account)
+            except ValueError:
+                raise ValueError(f"Invalid import source account: {item.source_name}") from None
             if item.action == "skip":
                 skipped.append(item.source_name)
                 continue
@@ -134,6 +138,8 @@ class AccountStore:
                 raise ValueError(f"Duplicate import target name: {target_name}")
             if target_name in registry["accounts"] and item.action != "overwrite":
                 raise ValueError(f"Account already exists: {target_name}")
+            if target_name not in registry["accounts"] and item.action == "overwrite":
+                raise ValueError(f"Cannot overwrite missing account: {target_name}")
             seen_targets.add(target_name)
             prepared_plan.append((source_account, target_name, item.action == "overwrite"))
 
@@ -176,6 +182,25 @@ class AccountStore:
             renamed=renamed,
             skipped=skipped,
         )
+
+    def _validate_import_source_account(self, account: TransferAccount) -> None:
+        parsed_snapshot = parse_snapshot(account.snapshot.raw)
+        validate_account_name(account.name)
+        validate_account_name(account.metadata.name)
+        if account.metadata.name != account.name:
+            raise ValueError("metadata name mismatch")
+        if account.metadata.auth_mode != parsed_snapshot.auth_mode:
+            raise ValueError("metadata auth mode mismatch")
+        if account.metadata.account_id != parsed_snapshot.account_id:
+            raise ValueError("metadata account id mismatch")
+        if account.metadata.last_refresh != parsed_snapshot.last_refresh:
+            raise ValueError("metadata last refresh mismatch")
+        if account.snapshot.auth_mode != parsed_snapshot.auth_mode:
+            raise ValueError("snapshot auth mode mismatch")
+        if account.snapshot.account_id != parsed_snapshot.account_id:
+            raise ValueError("snapshot account id mismatch")
+        if account.snapshot.last_refresh != parsed_snapshot.last_refresh:
+            raise ValueError("snapshot last refresh mismatch")
 
     def list_metadata(self) -> list[AccountMetadata]:
         registry = self.load_registry()

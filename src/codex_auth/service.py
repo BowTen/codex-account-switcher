@@ -11,6 +11,7 @@ from . import __version__
 from .codex_cli import run_login_status
 from .models import AccountMetadata, ImportPlanItem, ImportResult, TransferAccount, TransferArchive, UseResult
 from .store import AccountStore
+from .transfer import decrypt_transfer_archive, encrypt_transfer_archive
 from .validators import parse_snapshot, utc_now_iso, validate_account_name
 
 
@@ -86,6 +87,19 @@ class CodexAuthService:
         plan: list[ImportPlanItem],
     ) -> ImportResult:
         return self.store.import_snapshots(archive.accounts, plan)
+
+    def write_export_archive(self, names: list[str], path: Path | str, *, passphrase: str) -> None:
+        archive = self.build_export_archive(names)
+        blob = encrypt_transfer_archive(
+            archive.accounts,
+            passphrase=passphrase,
+            exported_at=archive.exported_at,
+            tool_version=archive.tool_version,
+        )
+        Path(path).write_bytes(blob)
+
+    def read_import_archive(self, path: Path | str, *, passphrase: str) -> TransferArchive:
+        return decrypt_transfer_archive(Path(path).read_bytes(), passphrase=passphrase)
 
     def active_account_name(self) -> str | None:
         return self.store.matched_active_name()

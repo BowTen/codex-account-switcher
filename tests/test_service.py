@@ -144,6 +144,20 @@ def test_build_export_archive_includes_only_selected_accounts(tmp_path) -> None:
     assert archive.tool_version == __version__
 
 
+def test_write_export_archive_and_read_import_archive_round_trip(tmp_path) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    archive_path = tmp_path / "accounts-export.codex"
+
+    service.write_export_archive(["work"], archive_path, passphrase="correct horse battery staple")
+    restored = service.read_import_archive(archive_path, passphrase="correct horse battery staple")
+
+    assert archive_path.exists()
+    assert [account.name for account in restored.accounts] == ["work"]
+    assert restored.accounts[0].metadata.account_id == "acct-work"
+    assert restored.exported_at is not None
+
+
 def test_apply_import_archive_writes_selected_accounts_without_touching_live_auth(tmp_path) -> None:
     service = CodexAuthService(home=tmp_path)
     service.store.save_snapshot("work", make_snapshot("acct-old-work"), force=False, mark_active=True)
