@@ -496,6 +496,28 @@ def test_cli_import_reports_missing_archive_file_concisely(tmp_path, monkeypatch
     assert f"error: [Errno 2] No such file or directory: '{archive_path}'" in captured.err
 
 
+def test_cli_import_reports_missing_archive_before_prompting_for_passphrase(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    archive_path = tmp_path / "missing-accounts.cae"
+
+    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
+    monkeypatch.setattr(
+        "codex_auth.prompts.prompt_passphrase",
+        lambda confirm: (_ for _ in ()).throw(AssertionError("passphrase prompt should not run")),
+    )
+
+    result = cli_main(["import", str(archive_path)])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert captured.out == ""
+    assert f"error: [Errno 2] No such file or directory: '{archive_path}'" in captured.err
+
+
 def test_cli_import_empty_selection_is_cancellation(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     source_home = tmp_path / "source-home"
@@ -543,6 +565,34 @@ def test_cli_import_with_empty_archive_is_an_error(tmp_path, monkeypatch, capsys
     assert result == 1
     assert captured.out == ""
     assert "error: No accounts available in import archive" in captured.err
+
+
+def test_cli_import_expands_user_paths(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source_home = tmp_path / "source-home"
+    source_service = CodexAuthService(home=source_home)
+    source_service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    archive_path = tmp_path / "accounts.cae"
+    source_service.write_export_archive(["work"], archive_path, passphrase="secret-pass")
+    pass_file = tmp_path / "pass.txt"
+    pass_file.write_text("secret-pass\n")
+
+    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
+    monkeypatch.setattr("codex_auth.prompts.prompt_select_archive_accounts", lambda accounts: ["work"])
+    monkeypatch.setattr(
+        "codex_auth.prompts.build_import_plan",
+        lambda archive_accounts, existing_accounts, selected_names: [
+            ImportPlanItem(source_name="work", target_name="work", action="import"),
+        ],
+    )
+
+    result = cli_main(["import", "~/accounts.cae", "--passphrase-file", "~/pass.txt"])
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert captured.err == ""
+    assert "imported: work" in captured.out
+    assert CodexAuthService().store.load_snapshot("work").account_id == "acct-work"
 
 
 def test_cli_import_applies_selected_accounts(tmp_path, monkeypatch, capsys) -> None:

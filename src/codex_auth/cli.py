@@ -78,8 +78,12 @@ def confirm_removal(name: str) -> bool:
     return response in {"y", "yes"}
 
 
+def resolve_cli_path(path: str) -> Path:
+    return Path(path).expanduser()
+
+
 def read_passphrase_from_file(path: str) -> str:
-    content = Path(path).read_text()
+    content = resolve_cli_path(path).read_text()
     if content.endswith("\r\n"):
         content = content[:-2]
     elif content.endswith("\n") or content.endswith("\r"):
@@ -155,12 +159,14 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "import":
             prompts.require_interactive("import")
+            archive_path = resolve_cli_path(args.file)
+            archive_path.read_bytes()
             passphrase = (
                 read_passphrase_from_file(args.passphrase_file)
                 if args.passphrase_file
                 else prompts.prompt_passphrase(confirm=False)
             )
-            archive = service.read_import_archive(args.file, passphrase=passphrase)
+            archive = service.read_import_archive(archive_path, passphrase=passphrase)
             if not archive.accounts:
                 raise ValueError("No accounts available in import archive")
             selected_names = prompts.prompt_select_archive_accounts(archive.accounts)
