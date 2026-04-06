@@ -66,7 +66,7 @@ class TransferArchive:
 
 @dataclass(slots=True)
 class ImportPlanItem:
-    source_account: TransferAccount
+    source_name: str
     target_name: str
     action: str
 

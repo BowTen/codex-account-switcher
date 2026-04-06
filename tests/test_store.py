@@ -213,8 +213,8 @@ def test_import_snapshots_rejects_duplicate_target_names(tmp_path) -> None:
         snapshot=parse_snapshot(make_snapshot("acct-personal")),
     )
     plan = [
-        ImportPlanItem(source_account=work_account, target_name="shared", action="rename"),
-        ImportPlanItem(source_account=personal_account, target_name="shared", action="rename"),
+        ImportPlanItem(source_name="work", target_name="shared", action="rename"),
+        ImportPlanItem(source_name="personal", target_name="shared", action="rename"),
     ]
 
     with pytest.raises(ValueError, match="Duplicate import target name: shared"):
@@ -237,18 +237,59 @@ def test_import_snapshots_rejects_invalid_later_plan_item_before_any_writes(tmp_
         snapshot=parse_snapshot(make_snapshot("acct-personal")),
     )
     plan = [
-        ImportPlanItem(source_account=work_account, target_name="work-copy", action="rename"),
-        ImportPlanItem(source_account=personal_account, target_name="personal-copy", action="invalid"),
+        ImportPlanItem(source_name="work", target_name="work-copy", action="rename"),
+        ImportPlanItem(source_name="personal", target_name="bad name", action="rename"),
     ]
 
-    with pytest.raises(ValueError, match="Invalid import action: invalid"):
+    with pytest.raises(ValueError, match="Invalid account name"):
         store.import_snapshots([work_account, personal_account], plan)
 
     assert not store.accounts_dir.exists()
     assert not store.registry_path.exists()
 
+def test_import_snapshots_rejects_invalid_action_without_writes(tmp_path) -> None:
+    store = AccountStore(tmp_path)
+    imported_account = TransferAccount(
+        name="travel",
+        metadata=build_metadata("travel", parse_snapshot(make_snapshot("acct-travel"))),
+        snapshot=parse_snapshot(make_snapshot("acct-travel")),
+    )
+    plan = [
+        ImportPlanItem(source_name="travel", target_name="travel", action="archive"),
+    ]
 
-def test_import_snapshots_uses_source_account_binding_from_plan(tmp_path) -> None:
+    with pytest.raises(ValueError, match="Invalid import action: archive"):
+        store.import_snapshots([imported_account], plan)
+
+    assert not store.accounts_dir.exists()
+    assert not store.registry_path.exists()
+
+
+def test_import_snapshots_preserves_archive_metadata_on_import(tmp_path) -> None:
+    store = AccountStore(tmp_path)
+    imported_account = TransferAccount(
+        name="travel",
+        metadata=build_metadata("travel", parse_snapshot(make_snapshot("acct-travel"))),
+        snapshot=parse_snapshot(make_snapshot("acct-travel")),
+    )
+    imported_account.metadata.created_at = "2020-01-01T00:00:00Z"
+    imported_account.metadata.updated_at = "2020-02-02T00:00:00Z"
+    imported_account.metadata.last_verified_at = "2020-03-03T00:00:00Z"
+    plan = [
+        ImportPlanItem(source_name="travel", target_name="vacation", action="rename"),
+    ]
+
+    result = store.import_snapshots([imported_account], plan)
+
+    assert result.imported == ["vacation"]
+    registry = store.load_registry()
+    assert registry["accounts"]["vacation"]["name"] == "vacation"
+    assert registry["accounts"]["vacation"]["created_at"] == "2020-01-01T00:00:00Z"
+    assert registry["accounts"]["vacation"]["updated_at"] == "2020-02-02T00:00:00Z"
+    assert registry["accounts"]["vacation"]["last_verified_at"] == "2020-03-03T00:00:00Z"
+
+
+def test_import_snapshots_rejects_duplicate_archive_names_before_writes(tmp_path) -> None:
     store = AccountStore(tmp_path)
     first_work_account = TransferAccount(
         name="work",
@@ -261,28 +302,11 @@ def test_import_snapshots_uses_source_account_binding_from_plan(tmp_path) -> Non
         snapshot=parse_snapshot(make_snapshot("acct-second-work")),
     )
     plan = [
-        ImportPlanItem(source_account=first_work_account, target_name="work-copy", action="rename"),
+        ImportPlanItem(source_name="work", target_name="work-copy", action="rename"),
     ]
 
-    result = store.import_snapshots([first_work_account, second_work_account], plan)
-
-    assert result.imported == ["work-copy"]
-    assert store.load_snapshot("work-copy").account_id == "acct-first-work"
-
-
-def test_import_snapshots_rejects_invalid_action_without_writes(tmp_path) -> None:
-    store = AccountStore(tmp_path)
-    imported_account = TransferAccount(
-        name="travel",
-        metadata=build_metadata("travel", parse_snapshot(make_snapshot("acct-travel"))),
-        snapshot=parse_snapshot(make_snapshot("acct-travel")),
-    )
-    plan = [
-        ImportPlanItem(source_account=imported_account, target_name="travel", action="archive"),
-    ]
-
-    with pytest.raises(ValueError, match="Invalid import action: archive"):
-        store.import_snapshots([imported_account], plan)
+    with pytest.raises(ValueError, match="Duplicate import source account name: work"):
+        store.import_snapshots([first_work_account, second_work_account], plan)
 
     assert not store.accounts_dir.exists()
     assert not store.registry_path.exists()
@@ -296,7 +320,7 @@ def test_import_snapshots_does_not_create_codex_dir(tmp_path) -> None:
         snapshot=parse_snapshot(make_snapshot("acct-travel")),
     )
     plan = [
-        ImportPlanItem(source_account=imported_account, target_name="travel", action="import"),
+        ImportPlanItem(source_name="travel", target_name="travel", action="import"),
     ]
 
     result = store.import_snapshots([imported_account], plan)

@@ -88,6 +88,24 @@ def test_decrypt_transfer_archive_rejects_wrong_passphrase() -> None:
         decrypt_transfer_archive(blob, passphrase="wrong passphrase")
 
 
+def test_decrypt_transfer_archive_rejects_duplicate_account_names() -> None:
+    blob = encrypt_transfer_archive(
+        [make_transfer_account("work", "acct-work"), make_transfer_account("personal", "acct-personal")],
+        passphrase="correct horse battery staple",
+    )
+    tampered_blob = rewrite_encrypted_payload(
+        blob,
+        passphrase="correct horse battery staple",
+        mutate_payload=lambda payload: (
+            payload["accounts"][1].__setitem__("name", "work"),
+            payload["accounts"][1]["metadata"].__setitem__("name", "work"),
+        ),
+    )
+
+    with pytest.raises(InvalidTransferFileError, match="invalid transfer file"):
+        decrypt_transfer_archive(tampered_blob, passphrase="correct horse battery staple")
+
+
 def test_decrypt_transfer_archive_rejects_unsupported_format_version() -> None:
     blob = encrypt_transfer_archive([make_transfer_account("work", "acct-work")], passphrase="correct horse battery staple")
     envelope = json.loads(blob)

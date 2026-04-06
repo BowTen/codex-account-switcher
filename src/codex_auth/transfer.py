@@ -54,6 +54,7 @@ def encrypt_transfer_archive(
     accounts = list(accounts)
     if len(accounts) > MAX_ACCOUNT_COUNT:
         raise ValueError("too many accounts for transfer archive")
+    _validate_unique_account_names(accounts)
 
     salt = secrets.token_bytes(SALT_LENGTH)
     nonce = secrets.token_bytes(NONCE_LENGTH)
@@ -117,6 +118,7 @@ def decrypt_transfer_archive(blob: bytes, *, passphrase: str) -> TransferArchive
     if len(accounts_payload) > MAX_ACCOUNT_COUNT:
         raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
     accounts = [_deserialize_transfer_account(item) for item in accounts_payload]
+    _validate_unique_account_names(accounts)
     return TransferArchive(
         accounts=accounts,
         exported_at=_optional_timestamp_string(payload, "exported_at"),
@@ -223,6 +225,14 @@ def _validate_transfer_account(account: TransferAccount) -> None:
         raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
     if account.snapshot.last_refresh != parsed_snapshot.last_refresh:
         raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+
+
+def _validate_unique_account_names(accounts: Iterable[TransferAccount]) -> None:
+    seen_names: set[str] = set()
+    for account in accounts:
+        if account.name in seen_names:
+            raise InvalidTransferFileError(INVALID_FILE_MESSAGE)
+        seen_names.add(account.name)
 
 
 def _validate_optional_metadata_value(value: Any, *, field_name: str) -> str | None:

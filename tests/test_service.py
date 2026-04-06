@@ -2,9 +2,9 @@ import os
 from pathlib import Path
 
 from codex_auth import __version__
-from codex_auth.models import ImportPlanItem, TransferAccount, TransferArchive
+from codex_auth.models import AccountMetadata, ImportPlanItem, TransferAccount, TransferArchive
 from codex_auth.service import CodexAuthService
-from codex_auth.validators import build_metadata, parse_snapshot
+from codex_auth.validators import parse_snapshot
 
 
 def write_fake_codex(bin_dir: Path, *, returncode: int = 0, output: str = "Logged in using ChatGPT\n") -> None:
@@ -153,12 +153,28 @@ def test_apply_import_archive_writes_selected_accounts_without_touching_live_aut
 
     work_account = TransferAccount(
         name="work",
-        metadata=build_metadata("work", parse_snapshot(make_snapshot("acct-new-work"))),
+        metadata=AccountMetadata(
+            name="work",
+            auth_mode="chatgpt",
+            account_id="acct-new-work",
+            created_at="2025-01-01T00:00:00Z",
+            updated_at="2025-02-02T00:00:00Z",
+            last_refresh="2026-04-04T10:00:00Z",
+            last_verified_at="2025-03-03T00:00:00Z",
+        ),
         snapshot=parse_snapshot(make_snapshot("acct-new-work")),
     )
     travel_account = TransferAccount(
         name="travel",
-        metadata=build_metadata("travel", parse_snapshot(make_snapshot("acct-travel"))),
+        metadata=AccountMetadata(
+            name="travel",
+            auth_mode="chatgpt",
+            account_id="acct-travel",
+            created_at="2024-05-05T00:00:00Z",
+            updated_at="2024-06-06T00:00:00Z",
+            last_refresh="2026-04-04T10:00:00Z",
+            last_verified_at="2024-07-07T00:00:00Z",
+        ),
         snapshot=parse_snapshot(make_snapshot("acct-travel")),
     )
     archive = TransferArchive(
@@ -167,8 +183,8 @@ def test_apply_import_archive_writes_selected_accounts_without_touching_live_aut
         accounts=[work_account, travel_account],
     )
     plan = [
-        ImportPlanItem(source_account=work_account, target_name="work", action="overwrite"),
-        ImportPlanItem(source_account=travel_account, target_name="vacation", action="rename"),
+        ImportPlanItem(source_name="work", target_name="work", action="overwrite"),
+        ImportPlanItem(source_name="travel", target_name="vacation", action="rename"),
     ]
 
     result = service.apply_import_archive(archive, plan)
@@ -176,5 +192,12 @@ def test_apply_import_archive_writes_selected_accounts_without_touching_live_aut
     assert result.imported == ["work", "vacation"]
     assert service.store.load_snapshot("work").account_id == "acct-new-work"
     assert service.store.load_snapshot("vacation").account_id == "acct-travel"
+    assert service.inspect_account("work")["created_at"] == "2025-01-01T00:00:00Z"
+    assert service.inspect_account("work")["updated_at"] == "2025-02-02T00:00:00Z"
+    assert service.inspect_account("work")["last_verified_at"] == "2025-03-03T00:00:00Z"
+    assert service.inspect_account("vacation")["name"] == "vacation"
+    assert service.inspect_account("vacation")["created_at"] == "2024-05-05T00:00:00Z"
+    assert service.inspect_account("vacation")["updated_at"] == "2024-06-06T00:00:00Z"
+    assert service.inspect_account("vacation")["last_verified_at"] == "2024-07-07T00:00:00Z"
     assert service.store.read_live_auth() == live_raw
     assert service.store.current_active_name() == active_before

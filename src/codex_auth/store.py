@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -105,45 +106,69 @@ class AccountStore:
         if not plan:
             return ImportResult(imported=[], overwritten=[], renamed=[], skipped=[])
 
-        account_by_name = {account.name: account for account in accounts}
+        account_by_name: dict[str, TransferAccount] = {}
+        for account in accounts:
+            if account.name in account_by_name:
+                raise ValueError(f"Duplicate import source account name: {account.name}")
+            account_by_name[account.name] = account
+
+        registry = self.load_registry()
         imported: list[str] = []
         overwritten: list[str] = []
         renamed: list[str] = []
         skipped: list[str] = []
         prepared_plan: list[tuple[TransferAccount, str, bool]] = []
         seen_targets: set[str] = set()
-        source_ids = {id(account) for account in accounts}
 
         for item in plan:
-            source_account = item.source_account
-            if id(source_account) not in source_ids:
-                raise ValueError(f"Unknown import source account: {source_account.name}")
-
+            source_account = account_by_name.get(item.source_name)
+            if source_account is None:
+                raise ValueError(f"Unknown import source account: {item.source_name}")
             if item.action == "skip":
-                skipped.append(source_account.name)
+                skipped.append(item.source_name)
                 continue
             if item.action not in {"import", "rename", "overwrite"}:
                 raise ValueError(f"Invalid import action: {item.action}")
-            if item.target_name in seen_targets:
-                raise ValueError(f"Duplicate import target name: {item.target_name}")
-            seen_targets.add(item.target_name)
-            prepared_plan.append((source_account, item.target_name, item.action == "overwrite"))
+            target_name = validate_account_name(item.target_name)
+            if target_name in seen_targets:
+                raise ValueError(f"Duplicate import target name: {target_name}")
+            if target_name in registry["accounts"] and item.action != "overwrite":
+                raise ValueError(f"Account already exists: {target_name}")
+            seen_targets.add(target_name)
+            prepared_plan.append((source_account, target_name, item.action == "overwrite"))
 
-        for source_account, target_name, force in prepared_plan:
+        self.ensure_store_dirs()
+        updated_registry = deepcopy(registry)
+        path_backups: dict[Path, bytes | None] = {}
 
-            self.save_snapshot(
-                target_name,
-                source_account.snapshot.raw,
-                force=force,
-                mark_active=False,
-                ensure_codex_dir=False,
-            )
+        try:
+            for source_account, target_name, force in prepared_plan:
+                path = self.accounts_dir / f"{target_name}.json"
+                if path not in path_backups:
+                    path_backups[path] = path.read_bytes() if path.exists() else None
 
-            imported.append(target_name)
-            if force:
-                overwritten.append(target_name)
-            if target_name != source_account.name:
-                renamed.append(target_name)
+                self._write_json_atomic(path, source_account.snapshot.raw)
+
+                metadata_dict = dict(source_account.metadata.to_dict())
+                metadata_dict["name"] = target_name
+                updated_registry["accounts"][target_name] = metadata_dict
+
+                imported.append(target_name)
+                if force:
+                    overwritten.append(target_name)
+                if target_name != source_account.name:
+                    renamed.append(target_name)
+
+            self.save_registry(updated_registry)
+        except Exception:
+            for path, previous_bytes in path_backups.items():
+                if previous_bytes is None:
+                    if path.exists():
+                        path.unlink()
+                else:
+                    path.write_bytes(previous_bytes)
+                    os.chmod(path, 0o600)
+            raise
 
         return ImportResult(
             imported=imported,
