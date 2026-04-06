@@ -13,13 +13,15 @@
 - 保存当前 `~/.codex/auth.json` 为命名快照。
 - 在多个已保存账号之间切换当前登录状态。
 - 列出、查看、重命名、删除本地账号快照。
+- 交互式批量导出/导入（interactive batch export/import）账号快照。
 - 通过 `codex login status` 校验切换结果。
 - 使用 `doctor` 检查本地存储、权限和 Codex 环境状态。
 
 ## 安全说明
 
 - 所有登录快照仅保存在当前机器本地，不会自动上传或同步。
-- 首个公开版本不提供额外加密，账号快照本质上仍然是本地凭证文件。
+- 导出文件是 passphrase-protected credential bundles，但它们仍然是高度敏感的凭证材料。
+- 导入和导出都需要交互式终端来完成账号选择。
 - 工具默认不会打印 `access_token`、`refresh_token` 或 `id_token`。
 - 仓库中不应提交任何真实的 `auth.json` 或其他凭证文件。
 
@@ -40,6 +42,8 @@ uv run codex-auth --help
 
 ## 命令示例
 
+`codex-auth import <file>` 会从指定的导出文件恢复账号快照。
+
 ```bash
 codex-auth save work
 codex-auth ls
@@ -48,6 +52,8 @@ codex-auth inspect work
 codex-auth use work
 codex-auth rename work primary
 codex-auth rm work --force-current --yes
+codex-auth export
+codex-auth import ./codex-auth-export.cae
 codex-auth doctor
 ```
 

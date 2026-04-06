@@ -21,7 +21,13 @@ def test_readme_mentions_uv_install_and_codex_auth() -> None:
     assert re.search(r"uv tool install git\+https://github\.com/[^/\s]+/codex-account-switcher\.git", text)
     assert "codex-auth" in text
     assert "仅保存在当前机器本地" in text
-    assert "首个公开版本不提供额外加密" in text
+    assert "interactive batch export/import" in text
+    assert "codex-auth export" in text
+    assert "codex-auth import <file>" in text
+    assert "codex-auth import ./codex-auth-export.cae" in text
+    assert "passphrase-protected credential bundles" in text
+    assert "高度敏感" in text
+    assert "交互式终端" in text
     assert "不会打印 `access_token`、`refresh_token` 或 `id_token`" in text
     assert "不应提交任何真实的 `auth.json`" in text
 
