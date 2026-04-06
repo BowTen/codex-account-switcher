@@ -200,7 +200,12 @@ def main(argv: list[str] | None = None) -> int:
             if not selected_names:
                 print("cancelled: import", file=sys.stderr)
                 return CANCELLED_EXIT_CODE
-            plan = prompts.build_import_plan(archive.accounts, service.list_accounts(), set(selected_names))
+            plan = run_prompt(
+                "import",
+                lambda: prompts.build_import_plan(archive.accounts, service.list_accounts(), set(selected_names)),
+            )
+            if plan is _PROMPT_CANCELLED:
+                return CANCELLED_EXIT_CODE
             result = service.apply_import_archive(archive, plan)
             print_name_list("imported", result.imported)
             print_name_list("skipped", result.skipped)

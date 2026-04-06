@@ -577,6 +577,40 @@ def test_cli_import_keyboard_interrupt_returns_cancellation(tmp_path, monkeypatc
     assert captured.err == "cancelled: import\n"
 
 
+def test_cli_import_keyboard_interrupt_during_import_plan_prompt_returns_cancellation(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source_home = tmp_path / "source-home"
+    service = CodexAuthService(home=source_home)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    archive_path = tmp_path / "accounts.cae"
+    pass_file = tmp_path / "pass.txt"
+    pass_file.write_text("secret-pass\n")
+    service.write_export_archive(["work"], archive_path, passphrase="secret-pass")
+
+    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
+    monkeypatch.setattr("codex_auth.prompts.prompt_select_archive_accounts", lambda accounts: ["work"])
+    monkeypatch.setattr(
+        CodexAuthService,
+        "list_accounts",
+        lambda self: [make_metadata("work", "acct-work")],
+    )
+    monkeypatch.setattr(
+        "codex_auth.prompts.prompt_conflict_action",
+        lambda name: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    result = cli_main(["import", str(archive_path), "--passphrase-file", str(pass_file)])
+    captured = capsys.readouterr()
+
+    assert result == 3
+    assert captured.out == ""
+    assert captured.err == "cancelled: import\n"
+
+
 def test_cli_import_keyboard_interrupt_during_import_is_not_swallowed(
     tmp_path,
     monkeypatch,
