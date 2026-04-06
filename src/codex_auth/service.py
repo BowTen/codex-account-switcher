@@ -97,8 +97,16 @@ class CodexAuthService:
             tool_version=archive.tool_version,
         )
         archive_path = Path(path)
-        archive_path.write_bytes(blob)
-        os.chmod(archive_path, 0o600)
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = archive_path.with_name(f"{archive_path.name}.tmp.{os.getpid()}")
+        try:
+            tmp_path.write_bytes(blob)
+            os.chmod(tmp_path, 0o600)
+            tmp_path.replace(archive_path)
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            raise
 
     def read_import_archive(self, path: Path | str, *, passphrase: str) -> TransferArchive:
         return decrypt_transfer_archive(Path(path).read_bytes(), passphrase=passphrase)

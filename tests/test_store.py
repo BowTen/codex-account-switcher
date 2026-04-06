@@ -329,6 +329,25 @@ def test_import_snapshots_rejects_inconsistent_transfer_account_before_writes(tm
     assert not store.registry_path.exists()
 
 
+def test_import_snapshots_rejects_invalid_metadata_timestamp_before_writes(tmp_path) -> None:
+    store = AccountStore(tmp_path)
+    imported_account = TransferAccount(
+        name="travel",
+        metadata=build_metadata("travel", parse_snapshot(make_snapshot("acct-travel"))),
+        snapshot=parse_snapshot(make_snapshot("acct-travel")),
+    )
+    imported_account.metadata.created_at = "2020-01-01"
+    plan = [
+        ImportPlanItem(source_name="travel", target_name="travel", action="import"),
+    ]
+
+    with pytest.raises(ValueError, match="Invalid import source account: travel"):
+        store.import_snapshots([imported_account], plan)
+
+    assert not store.accounts_dir.exists()
+    assert not store.registry_path.exists()
+
+
 def test_import_snapshots_rejects_duplicate_archive_names_before_writes(tmp_path) -> None:
     store = AccountStore(tmp_path)
     first_work_account = TransferAccount(

@@ -2,6 +2,8 @@ import os
 import stat
 from pathlib import Path
 
+import pytest
+
 from codex_auth import __version__
 from codex_auth.models import AccountMetadata, ImportPlanItem, TransferAccount, TransferArchive
 from codex_auth.service import CodexAuthService
@@ -158,6 +160,26 @@ def test_write_export_archive_and_read_import_archive_round_trip(tmp_path) -> No
     assert [account.name for account in restored.accounts] == ["work"]
     assert restored.accounts[0].metadata.account_id == "acct-work"
     assert restored.exported_at is not None
+
+
+def test_write_export_archive_is_atomic_on_replace_failure(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    archive_path = tmp_path / "accounts-export.codex"
+
+    original_replace = Path.replace
+
+    def fail_replace(self: Path, target: Path):  # type: ignore[no-untyped-def]
+        if target == archive_path:
+            raise OSError("replace failed")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        service.write_export_archive(["work"], archive_path, passphrase="correct horse battery staple")
+
+    assert not archive_path.exists()
 
 
 def test_apply_import_archive_writes_selected_accounts_without_touching_live_auth(tmp_path) -> None:

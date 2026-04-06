@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -201,6 +202,10 @@ class AccountStore:
         validate_account_name(account.metadata.name)
         if account.metadata.name != account.name:
             raise ValueError("metadata name mismatch")
+        self._validate_metadata_timestamp(account.metadata.created_at)
+        self._validate_metadata_timestamp(account.metadata.updated_at)
+        if account.metadata.last_verified_at is not None:
+            self._validate_metadata_timestamp(account.metadata.last_verified_at)
         if account.metadata.auth_mode != parsed_snapshot.auth_mode:
             raise ValueError("metadata auth mode mismatch")
         if account.metadata.account_id != parsed_snapshot.account_id:
@@ -213,6 +218,14 @@ class AccountStore:
             raise ValueError("snapshot account id mismatch")
         if account.snapshot.last_refresh != parsed_snapshot.last_refresh:
             raise ValueError("snapshot last refresh mismatch")
+
+    def _validate_metadata_timestamp(self, value: str) -> None:
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError as exc:
+            raise ValueError("invalid metadata timestamp") from exc
+        if parsed.tzinfo is not None:
+            raise ValueError("invalid metadata timestamp")
 
     def list_metadata(self) -> list[AccountMetadata]:
         registry = self.load_registry()
