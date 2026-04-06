@@ -415,6 +415,32 @@ def test_cli_export_keyboard_interrupt_returns_cancellation(tmp_path, monkeypatc
     assert captured.err == "cancelled: export\n"
 
 
+def test_cli_export_keyboard_interrupt_during_write_is_not_swallowed(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    service = CodexAuthService()
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    output_path = tmp_path / "accounts.cae"
+    pass_file = tmp_path / "pass.txt"
+    pass_file.write_text("secret-pass\n")
+
+    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
+    monkeypatch.setattr("codex_auth.prompts.prompt_select_saved_accounts", lambda accounts, message: ["work"])
+    monkeypatch.setattr("codex_auth.prompts.prompt_export_path", lambda default_path: output_path)
+    monkeypatch.setattr(
+        CodexAuthService,
+        "write_export_archive",
+        lambda self, names, path, passphrase: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        cli_main(["export", "--passphrase-file", str(pass_file)])
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+    assert not output_path.exists()
+
+
 def test_cli_export_with_no_saved_accounts_errors_before_reading_passphrase_file(
     tmp_path,
     monkeypatch,
@@ -549,6 +575,36 @@ def test_cli_import_keyboard_interrupt_returns_cancellation(tmp_path, monkeypatc
     assert result == 3
     assert captured.out == ""
     assert captured.err == "cancelled: import\n"
+
+
+def test_cli_import_keyboard_interrupt_during_import_is_not_swallowed(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source_home = tmp_path / "source-home"
+    service = CodexAuthService(home=source_home)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    archive_path = tmp_path / "accounts.cae"
+    pass_file = tmp_path / "pass.txt"
+    pass_file.write_text("secret-pass\n")
+    service.write_export_archive(["work"], archive_path, passphrase="secret-pass")
+
+    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
+    monkeypatch.setattr("codex_auth.prompts.prompt_select_archive_accounts", lambda accounts: ["work"])
+    monkeypatch.setattr(
+        CodexAuthService,
+        "apply_import_archive",
+        lambda self, archive, plan: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        cli_main(["import", str(archive_path), "--passphrase-file", str(pass_file)])
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def test_cli_import_reports_missing_archive_file_concisely(tmp_path, monkeypatch, capsys) -> None:

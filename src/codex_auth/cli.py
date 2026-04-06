@@ -10,6 +10,7 @@ from .service import CodexAuthService
 
 
 CANCELLED_EXIT_CODE = 3
+_PROMPT_CANCELLED = object()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -92,6 +93,14 @@ def read_passphrase_from_file(path: str) -> str:
     return lines[0]
 
 
+def run_prompt(command_name: str, prompt):
+    try:
+        return prompt()
+    except KeyboardInterrupt:
+        print(f"cancelled: {command_name}", file=sys.stderr)
+        return _PROMPT_CANCELLED
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -140,53 +149,64 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "export":
-            try:
-                prompts.require_interactive("export")
-                accounts = service.list_accounts()
-                if not accounts:
-                    raise ValueError("No saved accounts available for export")
-                selected_names = prompts.prompt_select_saved_accounts(accounts, message="Select accounts to export")
-                if not selected_names:
-                    print("cancelled: export", file=sys.stderr)
-                    return CANCELLED_EXIT_CODE
-                output_path = prompts.prompt_export_path(Path.cwd() / "codex-auth-export.cae")
-                passphrase = read_passphrase_from_file(args.passphrase_file) if args.passphrase_file else None
-                if passphrase is None:
-                    passphrase = prompts.prompt_passphrase(confirm=True)
-                service.write_export_archive(selected_names, output_path, passphrase=passphrase)
-                print(f"exported: {len(selected_names)} accounts -> {output_path}")
-                return 0
-            except KeyboardInterrupt:
+            prompts.require_interactive("export")
+            accounts = service.list_accounts()
+            if not accounts:
+                raise ValueError("No saved accounts available for export")
+            selected_names = run_prompt(
+                "export",
+                lambda: prompts.prompt_select_saved_accounts(accounts, message="Select accounts to export"),
+            )
+            if selected_names is _PROMPT_CANCELLED:
+                return CANCELLED_EXIT_CODE
+            if not selected_names:
                 print("cancelled: export", file=sys.stderr)
                 return CANCELLED_EXIT_CODE
+            output_path = run_prompt(
+                "export",
+                lambda: prompts.prompt_export_path(Path.cwd() / "codex-auth-export.cae"),
+            )
+            if output_path is _PROMPT_CANCELLED:
+                return CANCELLED_EXIT_CODE
+            passphrase = read_passphrase_from_file(args.passphrase_file) if args.passphrase_file else None
+            if passphrase is None:
+                passphrase = run_prompt("export", lambda: prompts.prompt_passphrase(confirm=True))
+                if passphrase is _PROMPT_CANCELLED:
+                    return CANCELLED_EXIT_CODE
+            service.write_export_archive(selected_names, output_path, passphrase=passphrase)
+            print(f"exported: {len(selected_names)} accounts -> {output_path}")
+            return 0
 
         if args.command == "import":
-            try:
-                prompts.require_interactive("import")
-                archive_path = resolve_cli_path(args.file)
-                archive_path.read_bytes()
-                passphrase = (
-                    read_passphrase_from_file(args.passphrase_file)
-                    if args.passphrase_file
-                    else prompts.prompt_passphrase(confirm=False)
-                )
-                archive = service.read_import_archive(archive_path, passphrase=passphrase)
-                if not archive.accounts:
-                    raise ValueError("No accounts available in import archive")
-                selected_names = prompts.prompt_select_archive_accounts(archive.accounts)
-                if not selected_names:
-                    print("cancelled: import", file=sys.stderr)
-                    return CANCELLED_EXIT_CODE
-                plan = prompts.build_import_plan(archive.accounts, service.list_accounts(), set(selected_names))
-                result = service.apply_import_archive(archive, plan)
-                print_name_list("imported", result.imported)
-                print_name_list("skipped", result.skipped)
-                print_name_list("overwritten", result.overwritten)
-                print_name_list("renamed", result.renamed)
-                return 0
-            except KeyboardInterrupt:
+            prompts.require_interactive("import")
+            archive_path = resolve_cli_path(args.file)
+            archive_path.read_bytes()
+            passphrase = (
+                read_passphrase_from_file(args.passphrase_file)
+                if args.passphrase_file
+                else run_prompt("import", lambda: prompts.prompt_passphrase(confirm=False))
+            )
+            if passphrase is _PROMPT_CANCELLED:
+                return CANCELLED_EXIT_CODE
+            archive = service.read_import_archive(archive_path, passphrase=passphrase)
+            if not archive.accounts:
+                raise ValueError("No accounts available in import archive")
+            selected_names = run_prompt(
+                "import",
+                lambda: prompts.prompt_select_archive_accounts(archive.accounts),
+            )
+            if selected_names is _PROMPT_CANCELLED:
+                return CANCELLED_EXIT_CODE
+            if not selected_names:
                 print("cancelled: import", file=sys.stderr)
                 return CANCELLED_EXIT_CODE
+            plan = prompts.build_import_plan(archive.accounts, service.list_accounts(), set(selected_names))
+            result = service.apply_import_archive(archive, plan)
+            print_name_list("imported", result.imported)
+            print_name_list("skipped", result.skipped)
+            print_name_list("overwritten", result.overwritten)
+            print_name_list("renamed", result.renamed)
+            return 0
 
         if args.command == "doctor":
             print_kv_map(service.doctor())
