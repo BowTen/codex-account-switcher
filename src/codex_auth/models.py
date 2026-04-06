@@ -48,3 +48,32 @@ class UseResult:
     verified: bool
     account_name: str
     verification: VerificationResult
+
+
+@dataclass(slots=True)
+class TransferAccount:
+    name: str
+    metadata: AccountMetadata
+    snapshot: AccountSnapshot
+
+
+@dataclass(slots=True)
+class TransferArchive:
+    accounts: list[TransferAccount]
+    exported_at: str | None = None
+    tool_version: str | None = None
+
+
+@dataclass(slots=True)
+class ImportPlanItem:
+    source_name: str
+    target_name: str
+    action: str
+
+
+@dataclass(slots=True)
+class ImportResult:
+    imported: list[str]
+    overwritten: list[str]
+    renamed: list[str]
+    skipped: list[str]

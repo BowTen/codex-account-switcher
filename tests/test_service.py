@@ -1,7 +1,13 @@
 import os
+import stat
 from pathlib import Path
 
+import pytest
+
+from codex_auth import __version__
+from codex_auth.models import AccountMetadata, ImportPlanItem, TransferAccount, TransferArchive
 from codex_auth.service import CodexAuthService
+from codex_auth.validators import parse_snapshot
 
 
 def write_fake_codex(bin_dir: Path, *, returncode: int = 0, output: str = "Logged in using ChatGPT\n") -> None:
@@ -126,3 +132,110 @@ def test_missing_codex_executable_returns_partial_result(tmp_path) -> None:
     assert "Could not find executable: codex" in result.verification.stderr
     assert service.store.read_live_auth()["tokens"]["account_id"] == "acct-personal"
     assert service.store.current_active_name() == "personal"
+
+
+def test_build_export_archive_includes_only_selected_accounts(tmp_path) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    service.store.save_snapshot("personal", make_snapshot("acct-personal"), force=False, mark_active=False)
+
+    archive = service.build_export_archive(["work"])
+
+    assert [account.name for account in archive.accounts] == ["work"]
+    assert archive.accounts[0].snapshot.raw["tokens"]["account_id"] == "acct-work"
+    assert archive.exported_at is not None
+    assert archive.tool_version == __version__
+
+
+def test_write_export_archive_and_read_import_archive_round_trip(tmp_path) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    archive_path = tmp_path / "accounts-export.codex"
+
+    service.write_export_archive(["work"], archive_path, passphrase="correct horse battery staple")
+    restored = service.read_import_archive(archive_path, passphrase="correct horse battery staple")
+
+    assert archive_path.exists()
+    assert stat.S_IMODE(archive_path.stat().st_mode) == 0o600
+    assert [account.name for account in restored.accounts] == ["work"]
+    assert restored.accounts[0].metadata.account_id == "acct-work"
+    assert restored.exported_at is not None
+
+
+def test_write_export_archive_is_atomic_on_replace_failure(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    archive_path = tmp_path / "accounts-export.codex"
+
+    original_replace = Path.replace
+
+    def fail_replace(self: Path, target: Path):  # type: ignore[no-untyped-def]
+        if target == archive_path:
+            raise OSError("replace failed")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        service.write_export_archive(["work"], archive_path, passphrase="correct horse battery staple")
+
+    assert not archive_path.exists()
+
+
+def test_apply_import_archive_writes_selected_accounts_without_touching_live_auth(tmp_path) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("work", make_snapshot("acct-old-work"), force=False, mark_active=True)
+    live_raw = make_snapshot("acct-live")
+    service.store.write_live_auth(live_raw)
+    active_before = service.store.current_active_name()
+
+    work_account = TransferAccount(
+        name="work",
+        metadata=AccountMetadata(
+            name="work",
+            auth_mode="chatgpt",
+            account_id="acct-new-work",
+            created_at="2025-01-01T00:00:00Z",
+            updated_at="2025-02-02T00:00:00Z",
+            last_refresh="2026-04-04T10:00:00Z",
+            last_verified_at="2025-03-03T00:00:00Z",
+        ),
+        snapshot=parse_snapshot(make_snapshot("acct-new-work")),
+    )
+    travel_account = TransferAccount(
+        name="travel",
+        metadata=AccountMetadata(
+            name="travel",
+            auth_mode="chatgpt",
+            account_id="acct-travel",
+            created_at="2024-05-05T00:00:00Z",
+            updated_at="2024-06-06T00:00:00Z",
+            last_refresh="2026-04-04T10:00:00Z",
+            last_verified_at="2024-07-07T00:00:00Z",
+        ),
+        snapshot=parse_snapshot(make_snapshot("acct-travel")),
+    )
+    archive = TransferArchive(
+        exported_at="2026-04-05T10:00:00Z",
+        tool_version="0.1.0",
+        accounts=[work_account, travel_account],
+    )
+    plan = [
+        ImportPlanItem(source_name="work", target_name="work", action="overwrite"),
+        ImportPlanItem(source_name="travel", target_name="vacation", action="rename"),
+    ]
+
+    result = service.apply_import_archive(archive, plan)
+
+    assert result.imported == ["work", "vacation"]
+    assert service.store.load_snapshot("work").account_id == "acct-new-work"
+    assert service.store.load_snapshot("vacation").account_id == "acct-travel"
+    assert service.inspect_account("work")["created_at"] == "2025-01-01T00:00:00Z"
+    assert service.inspect_account("work")["updated_at"] == "2025-02-02T00:00:00Z"
+    assert service.inspect_account("work")["last_verified_at"] == "2025-03-03T00:00:00Z"
+    assert service.inspect_account("vacation")["name"] == "vacation"
+    assert service.inspect_account("vacation")["created_at"] == "2024-05-05T00:00:00Z"
+    assert service.inspect_account("vacation")["updated_at"] == "2024-06-06T00:00:00Z"
+    assert service.inspect_account("vacation")["last_verified_at"] == "2024-07-07T00:00:00Z"
+    assert service.store.read_live_auth() == live_raw
+    assert service.store.current_active_name() == active_before

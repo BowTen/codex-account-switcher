@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
+from . import prompts
+from .errors import TransferError
 from .service import CodexAuthService
 
 
 CANCELLED_EXIT_CODE = 3
+_PROMPT_CANCELLED = object()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,6 +50,13 @@ def build_parser() -> argparse.ArgumentParser:
     rm_parser.add_argument("--yes", action="store_true")
     rm_parser.add_argument("--force-current", action="store_true")
 
+    export_parser = subparsers.add_parser("export", help="Export saved accounts into an encrypted transfer file.")
+    export_parser.add_argument("--passphrase-file")
+
+    import_parser = subparsers.add_parser("import", help="Import saved accounts from an encrypted transfer file.")
+    import_parser.add_argument("file")
+    import_parser.add_argument("--passphrase-file")
+
     subparsers.add_parser("doctor", help="Inspect local Codex and store state.")
     return parser
 
@@ -55,12 +66,39 @@ def print_kv_map(payload: dict[str, str | None]) -> None:
         print(f"{key}: {value}")
 
 
+def print_name_list(label: str, names: list[str]) -> None:
+    rendered = ", ".join(names) if names else "-"
+    print(f"{label}: {rendered}")
+
+
 def confirm_removal(name: str) -> bool:
     try:
         response = input(f"Remove account '{name}'? [y/N] ").strip().lower()
     except EOFError:
         return False
     return response in {"y", "yes"}
+
+
+def resolve_cli_path(path: str) -> Path:
+    return Path(path).expanduser()
+
+
+def read_passphrase_from_file(path: str) -> str:
+    content = resolve_cli_path(path).read_text()
+    lines = content.splitlines()
+    if not lines or not lines[0].strip():
+        raise ValueError(f"Passphrase file must not be blank: {path}")
+    if any(line.strip() for line in lines[1:]):
+        raise ValueError(f"Passphrase file must contain a single non-empty line: {path}")
+    return lines[0]
+
+
+def run_prompt(command_name: str, prompt):
+    try:
+        return prompt()
+    except KeyboardInterrupt:
+        print(f"cancelled: {command_name}", file=sys.stderr)
+        return _PROMPT_CANCELLED
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -110,10 +148,75 @@ def main(argv: list[str] | None = None) -> int:
             print(f"removed: {args.name}")
             return 0
 
+        if args.command == "export":
+            prompts.require_interactive("export")
+            accounts = service.list_accounts()
+            if not accounts:
+                raise ValueError("No saved accounts available for export")
+            selected_names = run_prompt(
+                "export",
+                lambda: prompts.prompt_select_saved_accounts(accounts, message="Select accounts to export"),
+            )
+            if selected_names is _PROMPT_CANCELLED:
+                return CANCELLED_EXIT_CODE
+            if not selected_names:
+                print("cancelled: export", file=sys.stderr)
+                return CANCELLED_EXIT_CODE
+            output_path = run_prompt(
+                "export",
+                lambda: prompts.prompt_export_path(Path.cwd() / "codex-auth-export.cae"),
+            )
+            if output_path is _PROMPT_CANCELLED:
+                return CANCELLED_EXIT_CODE
+            passphrase = read_passphrase_from_file(args.passphrase_file) if args.passphrase_file else None
+            if passphrase is None:
+                passphrase = run_prompt("export", lambda: prompts.prompt_passphrase(confirm=True))
+                if passphrase is _PROMPT_CANCELLED:
+                    return CANCELLED_EXIT_CODE
+            service.write_export_archive(selected_names, output_path, passphrase=passphrase)
+            print(f"exported: {len(selected_names)} accounts -> {output_path}")
+            return 0
+
+        if args.command == "import":
+            prompts.require_interactive("import")
+            archive_path = resolve_cli_path(args.file)
+            archive_path.read_bytes()
+            passphrase = (
+                read_passphrase_from_file(args.passphrase_file)
+                if args.passphrase_file
+                else run_prompt("import", lambda: prompts.prompt_passphrase(confirm=False))
+            )
+            if passphrase is _PROMPT_CANCELLED:
+                return CANCELLED_EXIT_CODE
+            archive = service.read_import_archive(archive_path, passphrase=passphrase)
+            if not archive.accounts:
+                raise ValueError("No accounts available in import archive")
+            selected_names = run_prompt(
+                "import",
+                lambda: prompts.prompt_select_archive_accounts(archive.accounts),
+            )
+            if selected_names is _PROMPT_CANCELLED:
+                return CANCELLED_EXIT_CODE
+            if not selected_names:
+                print("cancelled: import", file=sys.stderr)
+                return CANCELLED_EXIT_CODE
+            plan = run_prompt(
+                "import",
+                lambda: prompts.build_import_plan(archive.accounts, service.list_accounts(), set(selected_names)),
+            )
+            if plan is _PROMPT_CANCELLED:
+                return CANCELLED_EXIT_CODE
+            result = service.apply_import_archive(archive, plan)
+            print_name_list("imported", result.imported)
+            print_name_list("skipped", result.skipped)
+            print_name_list("overwritten", result.overwritten)
+            print_name_list("renamed", result.renamed)
+            return 0
+
         if args.command == "doctor":
             print_kv_map(service.doctor())
             return 0
-    except ValueError as exc:
+    except (OSError, ValueError, TransferError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

@@ -7,9 +7,11 @@ import stat
 from pathlib import Path
 from typing import Mapping
 
+from . import __version__
 from .codex_cli import run_login_status
-from .models import AccountMetadata, UseResult
+from .models import AccountMetadata, ImportPlanItem, ImportResult, TransferAccount, TransferArchive, UseResult
 from .store import AccountStore
+from .transfer import decrypt_transfer_archive, encrypt_transfer_archive
 from .validators import parse_snapshot, utc_now_iso, validate_account_name
 
 
@@ -58,6 +60,56 @@ class CodexAuthService:
 
     def list_accounts(self) -> list[AccountMetadata]:
         return self.store.list_metadata()
+
+    def build_export_archive(self, names: list[str]) -> TransferArchive:
+        if not names:
+            raise ValueError("No accounts selected for export")
+
+        accounts: list[TransferAccount] = []
+        for metadata, snapshot in self.store.load_snapshots(names):
+            accounts.append(
+                TransferAccount(
+                    name=metadata.name,
+                    metadata=metadata,
+                    snapshot=snapshot,
+                )
+            )
+
+        return TransferArchive(
+            accounts=accounts,
+            exported_at=utc_now_iso(),
+            tool_version=__version__,
+        )
+
+    def apply_import_archive(
+        self,
+        archive: TransferArchive,
+        plan: list[ImportPlanItem],
+    ) -> ImportResult:
+        return self.store.import_snapshots(archive.accounts, plan)
+
+    def write_export_archive(self, names: list[str], path: Path | str, *, passphrase: str) -> None:
+        archive = self.build_export_archive(names)
+        blob = encrypt_transfer_archive(
+            archive.accounts,
+            passphrase=passphrase,
+            exported_at=archive.exported_at,
+            tool_version=archive.tool_version,
+        )
+        archive_path = Path(path)
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = archive_path.with_name(f"{archive_path.name}.tmp.{os.getpid()}")
+        try:
+            tmp_path.write_bytes(blob)
+            os.chmod(tmp_path, 0o600)
+            tmp_path.replace(archive_path)
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            raise
+
+    def read_import_archive(self, path: Path | str, *, passphrase: str) -> TransferArchive:
+        return decrypt_transfer_archive(Path(path).read_bytes(), passphrase=passphrase)
 
     def active_account_name(self) -> str | None:
         return self.store.matched_active_name()
