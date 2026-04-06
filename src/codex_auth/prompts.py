@@ -113,11 +113,13 @@ def build_import_plan(
         if action != "rename":
             raise ValueError(f"Invalid import action: {action}")
 
-        new_name = validate_account_name(prompt_new_account_name(account.name))
-        if new_name in existing_names or new_name in planned_targets:
-            raise ValueError(f"Duplicate import target name: {new_name}")
-        planned_targets.add(new_name)
-        plan.append(ImportPlanItem(source_name=account.name, target_name=new_name, action="rename"))
+        while True:
+            new_name = validate_account_name(prompt_new_account_name(account.name))
+            if new_name in existing_names or new_name in planned_targets:
+                continue
+            planned_targets.add(new_name)
+            plan.append(ImportPlanItem(source_name=account.name, target_name=new_name, action="rename"))
+            break
 
     return plan
 

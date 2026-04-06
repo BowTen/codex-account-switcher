@@ -251,7 +251,7 @@ def test_build_import_plan_preserves_archive_order_and_actions(monkeypatch) -> N
     ]
 
 
-def test_build_import_plan_rejects_duplicate_planned_target_names(monkeypatch) -> None:
+def test_build_import_plan_reprompts_until_unique_rename_target(monkeypatch) -> None:
     archive_accounts = [
         make_transfer_account("work", "acct-work"),
         make_transfer_account("travel", "acct-travel"),
@@ -259,14 +259,26 @@ def test_build_import_plan_rejects_duplicate_planned_target_names(monkeypatch) -
     existing_accounts = [make_metadata("work", "acct-work"), make_metadata("travel", "acct-travel")]
 
     monkeypatch.setattr(prompts, "prompt_conflict_action", lambda name: "rename")
-    monkeypatch.setattr(prompts, "prompt_new_account_name", lambda source_name: "shared")
+    responses = iter(["shared", "shared", "vacation"])
+    calls: list[str] = []
 
-    with pytest.raises(ValueError, match="Duplicate import target name: shared"):
-        prompts.build_import_plan(
-            archive_accounts,
-            existing_accounts,
-            {"work", "travel"},
-        )
+    def fake_prompt_new_account_name(source_name: str) -> str:
+        calls.append(source_name)
+        return next(responses)
+
+    monkeypatch.setattr(prompts, "prompt_new_account_name", fake_prompt_new_account_name)
+
+    plan = prompts.build_import_plan(
+        archive_accounts,
+        existing_accounts,
+        {"work", "travel"},
+    )
+
+    assert plan == [
+        ImportPlanItem(source_name="work", target_name="shared", action="rename"),
+        ImportPlanItem(source_name="travel", target_name="vacation", action="rename"),
+    ]
+    assert calls == ["work", "travel", "travel"]
 
 
 def test_build_import_plan_rejects_duplicate_import_targets_from_repeated_archive_names() -> None:
