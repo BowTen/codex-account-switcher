@@ -247,6 +247,27 @@ def test_import_snapshots_rejects_invalid_later_plan_item_before_any_writes(tmp_
     assert not store.accounts_dir.exists()
     assert not store.registry_path.exists()
 
+
+def test_import_snapshots_skip_only_plan_is_no_op(tmp_path) -> None:
+    store = AccountStore(tmp_path)
+    imported_account = TransferAccount(
+        name="travel",
+        metadata=build_metadata("travel", parse_snapshot(make_snapshot("acct-travel"))),
+        snapshot=parse_snapshot(make_snapshot("acct-travel")),
+    )
+    plan = [
+        ImportPlanItem(source_name="travel", target_name="travel", action="skip"),
+    ]
+
+    result = store.import_snapshots([imported_account], plan)
+
+    assert result.imported == []
+    assert result.skipped == ["travel"]
+    assert not store.root.exists()
+    assert not store.accounts_dir.exists()
+    assert not store.registry_path.exists()
+
+
 def test_import_snapshots_rejects_invalid_action_without_writes(tmp_path) -> None:
     store = AccountStore(tmp_path)
     imported_account = TransferAccount(
@@ -326,6 +347,25 @@ def test_import_snapshots_rejects_duplicate_archive_names_before_writes(tmp_path
 
     with pytest.raises(ValueError, match="Duplicate import source account name: work"):
         store.import_snapshots([first_work_account, second_work_account], plan)
+
+    assert not store.accounts_dir.exists()
+    assert not store.registry_path.exists()
+
+
+def test_import_snapshots_rejects_duplicate_source_names_in_plan(tmp_path) -> None:
+    store = AccountStore(tmp_path)
+    imported_account = TransferAccount(
+        name="travel",
+        metadata=build_metadata("travel", parse_snapshot(make_snapshot("acct-travel"))),
+        snapshot=parse_snapshot(make_snapshot("acct-travel")),
+    )
+    plan = [
+        ImportPlanItem(source_name="travel", target_name="travel-a", action="rename"),
+        ImportPlanItem(source_name="travel", target_name="travel-b", action="rename"),
+    ]
+
+    with pytest.raises(ValueError, match="Duplicate import source name in plan: travel"):
+        store.import_snapshots([imported_account], plan)
 
     assert not store.accounts_dir.exists()
     assert not store.registry_path.exists()

@@ -118,9 +118,13 @@ class AccountStore:
         renamed: list[str] = []
         skipped: list[str] = []
         prepared_plan: list[tuple[TransferAccount, str, bool]] = []
+        seen_sources: set[str] = set()
         seen_targets: set[str] = set()
 
         for item in plan:
+            if item.source_name in seen_sources:
+                raise ValueError(f"Duplicate import source name in plan: {item.source_name}")
+            seen_sources.add(item.source_name)
             source_account = account_by_name.get(item.source_name)
             if source_account is None:
                 raise ValueError(f"Unknown import source account: {item.source_name}")
@@ -142,6 +146,14 @@ class AccountStore:
                 raise ValueError(f"Cannot overwrite missing account: {target_name}")
             seen_targets.add(target_name)
             prepared_plan.append((source_account, target_name, item.action == "overwrite"))
+
+        if not prepared_plan:
+            return ImportResult(
+                imported=imported,
+                overwritten=overwritten,
+                renamed=renamed,
+                skipped=skipped,
+            )
 
         self.ensure_store_dirs()
         updated_registry = deepcopy(registry)

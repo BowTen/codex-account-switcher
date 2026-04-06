@@ -96,7 +96,9 @@ class CodexAuthService:
             exported_at=archive.exported_at,
             tool_version=archive.tool_version,
         )
-        Path(path).write_bytes(blob)
+        archive_path = Path(path)
+        archive_path.write_bytes(blob)
+        os.chmod(archive_path, 0o600)
 
     def read_import_archive(self, path: Path | str, *, passphrase: str) -> TransferArchive:
         return decrypt_transfer_archive(Path(path).read_bytes(), passphrase=passphrase)

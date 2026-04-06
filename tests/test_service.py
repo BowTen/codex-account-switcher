@@ -1,4 +1,5 @@
 import os
+import stat
 from pathlib import Path
 
 from codex_auth import __version__
@@ -153,6 +154,7 @@ def test_write_export_archive_and_read_import_archive_round_trip(tmp_path) -> No
     restored = service.read_import_archive(archive_path, passphrase="correct horse battery staple")
 
     assert archive_path.exists()
+    assert stat.S_IMODE(archive_path.stat().st_mode) == 0o600
     assert [account.name for account in restored.accounts] == ["work"]
     assert restored.accounts[0].metadata.account_id == "acct-work"
     assert restored.exported_at is not None
