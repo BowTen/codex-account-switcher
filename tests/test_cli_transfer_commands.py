@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,11 +12,22 @@ from codex_auth import prompts
 
 
 class _FakePrompt:
-    def __init__(self, value):
+    def __init__(self, value=None, *, responses=None, validate=None, filter=None):  # type: ignore[no-untyped-def]
         self.value = value
+        self.responses = list(responses or [])
+        self.validate = validate
+        self.filter = filter
 
     def execute(self):  # type: ignore[no-untyped-def]
-        return self.value
+        if self.responses:
+            for response in self.responses:
+                if self.validate is not None:
+                    result = self.validate(response)
+                    if result not in (True, None):
+                        continue
+                return self.filter(response) if self.filter is not None else response
+            raise AssertionError("prompt did not accept any provided responses")
+        return self.filter(self.value) if self.filter is not None else self.value
 
 
 def make_metadata(name: str, account_id: str) -> AccountMetadata:
@@ -56,6 +69,23 @@ def test_require_interactive_rejects_noninteractive_stdin() -> None:
 
     with pytest.raises(InteractiveRequiredError, match="export requires an interactive terminal"):
         prompts.require_interactive("export", stdin=FakeStdin())
+
+
+def test_require_interactive_uses_sys_stdin_at_call_time(monkeypatch) -> None:
+    class InteractiveStdin:
+        def isatty(self) -> bool:
+            return True
+
+    class NonInteractiveStdin:
+        def isatty(self) -> bool:
+            return False
+
+    monkeypatch.setattr(sys, "stdin", InteractiveStdin())
+    reloaded_prompts = importlib.reload(prompts)
+    monkeypatch.setattr(sys, "stdin", NonInteractiveStdin())
+
+    with pytest.raises(InteractiveRequiredError, match="export requires an interactive terminal"):
+        reloaded_prompts.require_interactive("export")
 
 
 def test_prompt_select_saved_accounts_uses_inquirer_checkbox(monkeypatch) -> None:
@@ -105,10 +135,10 @@ def test_prompt_select_archive_accounts_uses_inquirer_checkbox(monkeypatch) -> N
 def test_prompt_export_path_expands_user_and_trims_whitespace(monkeypatch) -> None:
     captured = {}
 
-    def fake_text(*, message, default):  # type: ignore[no-untyped-def]
+    def fake_text(*, message, default, validate=None, invalid_message=None, filter=None):  # type: ignore[no-untyped-def]
         captured["message"] = message
         captured["default"] = default
-        return _FakePrompt(" ~/exports/accounts.codex \n")
+        return _FakePrompt(" ~/exports/accounts.codex \n", filter=filter)
 
     monkeypatch.setattr(prompts.inquirer, "text", fake_text)
 
@@ -117,6 +147,28 @@ def test_prompt_export_path_expands_user_and_trims_whitespace(monkeypatch) -> No
     assert result == Path("~/exports/accounts.codex").expanduser()
     assert captured["message"] == "Export file path"
     assert captured["default"] == "/tmp/default.codex"
+
+
+def test_prompt_export_path_rejects_blank_input_before_accepting_value(monkeypatch) -> None:
+    captured = {}
+
+    def fake_text(*, message, default, validate=None, invalid_message=None, filter=None):  # type: ignore[no-untyped-def]
+        captured["message"] = message
+        captured["default"] = default
+        captured["validate"] = validate
+        captured["invalid_message"] = invalid_message
+        captured["filter"] = filter
+        return _FakePrompt(responses=["   ", " ~/exports/accounts.codex \n"], validate=validate, filter=filter)
+
+    monkeypatch.setattr(prompts.inquirer, "text", fake_text)
+
+    result = prompts.prompt_export_path(Path("/tmp/default.codex"))
+
+    assert result == Path("~/exports/accounts.codex").expanduser()
+    assert captured["message"] == "Export file path"
+    assert captured["default"] == "/tmp/default.codex"
+    assert captured["validate"] is not None
+    assert captured["invalid_message"]
 
 
 def test_prompt_passphrase_confirms_matching_values(monkeypatch) -> None:
@@ -144,6 +196,26 @@ def test_prompt_passphrase_rejects_mismatched_confirmation(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="Passphrases do not match"):
         prompts.prompt_passphrase(confirm=True)
+
+
+def test_prompt_new_account_name_rejects_blank_and_invalid_input(monkeypatch) -> None:
+    captured = {}
+
+    def fake_text(*, message, validate=None, invalid_message=None, filter=None, default=None):  # type: ignore[no-untyped-def]
+        captured["message"] = message
+        captured["validate"] = validate
+        captured["invalid_message"] = invalid_message
+        captured["filter"] = filter
+        return _FakePrompt(responses=["   ", "bad name", "  vacation  "], validate=validate, filter=filter)
+
+    monkeypatch.setattr(prompts.inquirer, "text", fake_text)
+
+    result = prompts.prompt_new_account_name("work")
+
+    assert result == "vacation"
+    assert captured["message"] == "Rename imported account 'work' to"
+    assert captured["validate"] is not None
+    assert captured["invalid_message"]
 
 
 def test_build_import_plan_preserves_archive_order_and_actions(monkeypatch) -> None:

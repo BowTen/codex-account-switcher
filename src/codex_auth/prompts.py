@@ -12,7 +12,9 @@ from .models import AccountMetadata, ImportPlanItem, TransferAccount
 from .validators import validate_account_name
 
 
-def require_interactive(command_name: str, *, stdin: TextIO = sys.stdin) -> None:
+def require_interactive(command_name: str, *, stdin: TextIO | None = None) -> None:
+    if stdin is None:
+        stdin = sys.stdin
     if not stdin.isatty():
         raise InteractiveRequiredError(f"{command_name} requires an interactive terminal")
 
@@ -42,7 +44,13 @@ def prompt_select_archive_accounts(accounts: list[TransferAccount]) -> list[str]
 
 
 def prompt_export_path(default_path: Path) -> Path:
-    value = inquirer.text(message="Export file path", default=str(default_path)).execute().strip()
+    value = inquirer.text(
+        message="Export file path",
+        default=str(default_path),
+        validate=_validate_nonempty_text,
+        invalid_message="Export path cannot be blank",
+        filter=str.strip,
+    ).execute()
     return Path(value).expanduser()
 
 
@@ -64,7 +72,12 @@ def prompt_conflict_action(name: str) -> str:
 
 
 def prompt_new_account_name(source_name: str) -> str:
-    return inquirer.text(message=f"Rename imported account '{source_name}' to").execute().strip()
+    return inquirer.text(
+        message=f"Rename imported account '{source_name}' to",
+        validate=_validate_account_name_text,
+        invalid_message="Enter a valid account name",
+        filter=str.strip,
+    ).execute()
 
 
 def build_import_plan(
@@ -107,3 +120,18 @@ def build_import_plan(
         plan.append(ImportPlanItem(source_name=account.name, target_name=new_name, action="rename"))
 
     return plan
+
+
+def _validate_nonempty_text(value: str) -> bool:
+    return bool(value.strip())
+
+
+def _validate_account_name_text(value: str) -> bool:
+    candidate = value.strip()
+    if not candidate:
+        return False
+    try:
+        validate_account_name(candidate)
+    except ValueError:
+        return False
+    return True
