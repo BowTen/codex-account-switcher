@@ -18,8 +18,10 @@ class AccountStore:
         self.registry_path = self.root / "registry.json"
         self.live_auth_path = self.codex_dir / "auth.json"
 
-    def ensure_dirs(self) -> None:
+    def ensure_store_dirs(self) -> None:
         self.accounts_dir.mkdir(parents=True, exist_ok=True)
+
+    def ensure_codex_dirs(self) -> None:
         self.codex_dir.mkdir(parents=True, exist_ok=True)
 
     def load_registry(self) -> dict[str, Any]:
@@ -28,7 +30,7 @@ class AccountStore:
         return json.loads(self.registry_path.read_text())
 
     def save_registry(self, registry: dict[str, Any]) -> None:
-        self.ensure_dirs()
+        self.ensure_store_dirs()
         self._write_json_atomic(self.registry_path, registry)
 
     def load_snapshot(self, name: str) -> AccountSnapshot:
@@ -56,9 +58,12 @@ class AccountStore:
         *,
         force: bool,
         mark_active: bool,
+        ensure_codex_dir: bool = True,
     ) -> AccountMetadata:
         name = validate_account_name(name)
-        self.ensure_dirs()
+        self.ensure_store_dirs()
+        if ensure_codex_dir:
+            self.ensure_codex_dirs()
         path = self.accounts_dir / f"{name}.json"
         if path.exists() and not force:
             raise ValueError(f"Account already exists: {name}")
@@ -127,6 +132,7 @@ class AccountStore:
                 account.snapshot.raw,
                 force=force,
                 mark_active=False,
+                ensure_codex_dir=False,
             )
 
             imported.append(item.target_name)
@@ -209,7 +215,7 @@ class AccountStore:
         new_path = self.accounts_dir / f"{new}.json"
         old_snapshot = old_path.read_bytes()
         new_snapshot = new_path.read_bytes() if new_path.exists() else None
-        self.ensure_dirs()
+        self.ensure_store_dirs()
         old_path.replace(new_path)
 
         entry = registry["accounts"].pop(old)
@@ -236,7 +242,7 @@ class AccountStore:
         return json.loads(self.live_auth_path.read_text())
 
     def write_live_auth(self, raw: dict[str, Any]) -> None:
-        self.ensure_dirs()
+        self.ensure_codex_dirs()
         self._write_json_atomic(self.live_auth_path, raw)
 
     def mark_verified(self, name: str, verified_at: str) -> None:

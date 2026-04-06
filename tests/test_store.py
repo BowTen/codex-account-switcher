@@ -191,6 +191,15 @@ def test_load_snapshots_returns_saved_metadata_and_snapshots(tmp_path) -> None:
     assert snapshot.raw == source_raw
 
 
+def test_save_snapshot_creates_codex_dir(tmp_path) -> None:
+    store = AccountStore(tmp_path)
+
+    store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=False)
+
+    assert store.codex_dir.exists()
+    assert (store.codex_dir / "auth.json").exists() is False
+
+
 def test_import_snapshots_rejects_duplicate_target_names(tmp_path) -> None:
     store = AccountStore(tmp_path)
     work_account = TransferAccount(
@@ -210,3 +219,22 @@ def test_import_snapshots_rejects_duplicate_target_names(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="Duplicate import target name: shared"):
         store.import_snapshots([work_account, personal_account], plan)
+
+
+def test_import_snapshots_does_not_create_codex_dir(tmp_path) -> None:
+    store = AccountStore(tmp_path)
+    imported_account = TransferAccount(
+        name="travel",
+        metadata=build_metadata("travel", parse_snapshot(make_snapshot("acct-travel"))),
+        snapshot=parse_snapshot(make_snapshot("acct-travel")),
+    )
+    plan = [
+        ImportPlanItem(source_account=imported_account, target_name="travel", action="import"),
+    ]
+
+    result = store.import_snapshots([imported_account], plan)
+
+    assert result.imported == ["travel"]
+    assert not store.codex_dir.exists()
+    assert (store.accounts_dir / "travel.json").exists()
+    assert store.registry_path.exists()
