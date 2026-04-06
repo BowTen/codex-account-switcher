@@ -142,7 +142,6 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "export":
             prompts.require_interactive("export")
-            passphrase = read_passphrase_from_file(args.passphrase_file) if args.passphrase_file else None
             accounts = service.list_accounts()
             if not accounts:
                 raise ValueError("No saved accounts available for export")
@@ -151,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("cancelled: export", file=sys.stderr)
                 return CANCELLED_EXIT_CODE
             output_path = prompts.prompt_export_path(Path.cwd() / "codex-auth-export.cae")
+            passphrase = read_passphrase_from_file(args.passphrase_file) if args.passphrase_file else None
             if passphrase is None:
                 passphrase = prompts.prompt_passphrase(confirm=True)
             service.write_export_archive(selected_names, output_path, passphrase=passphrase)

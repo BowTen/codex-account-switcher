@@ -394,50 +394,12 @@ def test_cli_export_empty_selection_is_cancellation(tmp_path, monkeypatch, capsy
     assert "cancelled: export" in captured.err
 
 
-def test_cli_export_with_no_saved_accounts_is_an_error(tmp_path, monkeypatch, capsys) -> None:
+def test_cli_export_with_no_saved_accounts_errors_before_reading_passphrase_file(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
-    pass_file = tmp_path / "pass.txt"
-    pass_file.write_text("secret-pass\n")
-
-    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
-    monkeypatch.setattr(
-        "codex_auth.prompts.prompt_select_saved_accounts",
-        lambda accounts, message: (_ for _ in ()).throw(AssertionError("selection prompt should not run")),
-    )
-
-    result = cli_main(["export", "--passphrase-file", str(pass_file)])
-    captured = capsys.readouterr()
-
-    assert result == 1
-    assert captured.out == ""
-    assert "error: No saved accounts available for export" in captured.err
-
-
-def test_cli_export_reports_missing_passphrase_file_concisely(tmp_path, monkeypatch, capsys) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
-    service = CodexAuthService()
-    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
-    missing_pass_file = tmp_path / "missing-pass.txt"
-
-    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
-    monkeypatch.setattr(
-        "codex_auth.prompts.prompt_select_saved_accounts",
-        lambda accounts, message: ["work"],
-    )
-    monkeypatch.setattr("codex_auth.prompts.prompt_export_path", lambda default_path: tmp_path / "accounts.cae")
-
-    result = cli_main(["export", "--passphrase-file", str(missing_pass_file)])
-    captured = capsys.readouterr()
-
-    assert result == 1
-    assert captured.out == ""
-    assert f"error: [Errno 2] No such file or directory: '{missing_pass_file}'" in captured.err
-
-
-def test_cli_export_validates_passphrase_file_before_prompting(tmp_path, monkeypatch, capsys) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
-    service = CodexAuthService()
-    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
     missing_pass_file = tmp_path / "missing-pass.txt"
 
     monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
@@ -455,6 +417,63 @@ def test_cli_export_validates_passphrase_file_before_prompting(tmp_path, monkeyp
 
     assert result == 1
     assert captured.out == ""
+    assert "error: No saved accounts available for export" in captured.err
+
+
+def test_cli_export_reports_missing_passphrase_file_concisely(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    service = CodexAuthService()
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    missing_pass_file = tmp_path / "missing-pass.txt"
+
+    calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
+    monkeypatch.setattr(
+        "codex_auth.prompts.prompt_select_saved_accounts",
+        lambda accounts, message: calls.append(("select", message)) or ["work"],
+    )
+    monkeypatch.setattr(
+        "codex_auth.prompts.prompt_export_path",
+        lambda default_path: calls.append(("path", str(default_path))) or tmp_path / "accounts.cae",
+    )
+
+    result = cli_main(["export", "--passphrase-file", str(missing_pass_file)])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert captured.out == ""
+    assert calls == [
+        ("select", "Select accounts to export"),
+        ("path", str(Path.cwd() / "codex-auth-export.cae")),
+    ]
+    assert f"error: [Errno 2] No such file or directory: '{missing_pass_file}'" in captured.err
+
+
+def test_cli_export_validates_passphrase_file_before_prompting(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    service = CodexAuthService()
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    missing_pass_file = tmp_path / "missing-pass.txt"
+
+    prompt_calls: list[str] = []
+
+    monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
+    monkeypatch.setattr(
+        "codex_auth.prompts.prompt_select_saved_accounts",
+        lambda accounts, message: prompt_calls.append("selection") or ["work"],
+    )
+    monkeypatch.setattr(
+        "codex_auth.prompts.prompt_export_path",
+        lambda default_path: prompt_calls.append("path") or tmp_path / "accounts.cae",
+    )
+
+    result = cli_main(["export", "--passphrase-file", str(missing_pass_file)])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert captured.out == ""
+    assert prompt_calls == ["selection", "path"]
     assert f"error: [Errno 2] No such file or directory: '{missing_pass_file}'" in captured.err
 
 
