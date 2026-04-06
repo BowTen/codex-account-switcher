@@ -376,10 +376,11 @@ def test_cli_import_applies_selected_accounts(tmp_path, monkeypatch, capsys) -> 
     source_service = CodexAuthService(home=source_home)
     source_service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
     source_service.store.save_snapshot("travel", make_snapshot("acct-travel"), force=False, mark_active=False)
+    source_service.store.save_snapshot("personal", make_snapshot("acct-personal"), force=False, mark_active=False)
     archive_path = tmp_path / "accounts.cae"
     pass_file = tmp_path / "pass.txt"
     pass_file.write_text("secret-pass\n")
-    source_service.write_export_archive(["work", "travel"], archive_path, passphrase="secret-pass")
+    source_service.write_export_archive(["work", "travel", "personal"], archive_path, passphrase="secret-pass")
 
     target_service = CodexAuthService()
     target_service.store.save_snapshot("work", make_snapshot("acct-existing-work"), force=False, mark_active=True)
@@ -387,12 +388,13 @@ def test_cli_import_applies_selected_accounts(tmp_path, monkeypatch, capsys) -> 
     target_service.store.write_live_auth(live_before)
 
     monkeypatch.setattr("codex_auth.prompts.require_interactive", lambda command_name: None)
-    monkeypatch.setattr("codex_auth.prompts.prompt_select_archive_accounts", lambda accounts: ["work", "travel"])
+    monkeypatch.setattr("codex_auth.prompts.prompt_select_archive_accounts", lambda accounts: ["work", "travel", "personal"])
     monkeypatch.setattr(
         "codex_auth.prompts.build_import_plan",
         lambda archive_accounts, existing_accounts, selected_names: [
             ImportPlanItem(source_name="work", target_name="work", action="overwrite"),
             ImportPlanItem(source_name="travel", target_name="vacation", action="rename"),
+            ImportPlanItem(source_name="personal", target_name="personal", action="skip"),
         ],
     )
 
@@ -402,6 +404,9 @@ def test_cli_import_applies_selected_accounts(tmp_path, monkeypatch, capsys) -> 
     assert result == 0
     assert captured.err == ""
     assert "imported: work, vacation" in captured.out
+    assert "skipped: personal" in captured.out
+    assert "overwritten: work" in captured.out
+    assert "renamed: vacation" in captured.out
     assert target_service.store.load_snapshot("work").account_id == "acct-work"
     assert target_service.store.load_snapshot("vacation").account_id == "acct-travel"
     assert target_service.store.read_live_auth() == live_before

@@ -65,6 +65,11 @@ def print_kv_map(payload: dict[str, str | None]) -> None:
         print(f"{key}: {value}")
 
 
+def print_name_list(label: str, names: list[str]) -> None:
+    rendered = ", ".join(names) if names else "-"
+    print(f"{label}: {rendered}")
+
+
 def confirm_removal(name: str) -> bool:
     try:
         response = input(f"Remove account '{name}'? [y/N] ").strip().lower()
@@ -156,7 +161,10 @@ def main(argv: list[str] | None = None) -> int:
             selected_names = set(prompts.prompt_select_archive_accounts(archive.accounts))
             plan = prompts.build_import_plan(archive.accounts, service.list_accounts(), selected_names)
             result = service.apply_import_archive(archive, plan)
-            print(f"imported: {', '.join(result.imported)}")
+            print_name_list("imported", result.imported)
+            print_name_list("skipped", result.skipped)
+            print_name_list("overwritten", result.overwritten)
+            print_name_list("renamed", result.renamed)
             return 0
 
         if args.command == "doctor":
