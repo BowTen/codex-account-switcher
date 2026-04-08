@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import stat
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Mapping
 
@@ -26,6 +27,7 @@ from .transfer import decrypt_transfer_archive, encrypt_transfer_archive
 from .validators import parse_snapshot, utc_now_iso, validate_account_name
 
 LIVE_USAGE_DISPLAY_NAME = "(live)"
+USAGE_BATCH_MAX_WORKERS = 4
 
 
 def fetch_account_usage_snapshot(target: UsageQueryTarget) -> AccountUsageResult:
@@ -154,12 +156,24 @@ class CodexAuthService:
         return result
 
     def list_usage_accounts(self) -> list[AccountUsageResult]:
-        results: list[AccountUsageResult] = []
-        for target in self._list_usage_targets():
-            result = self._fetch_usage_target(target)
-            self._persist_usage_refresh(target, result)
-            results.append(result)
-        return results
+        targets = self._list_usage_targets()
+        results: list[AccountUsageResult | None] = [None] * len(targets)
+        with ThreadPoolExecutor(max_workers=USAGE_BATCH_MAX_WORKERS) as executor:
+            futures = {
+                executor.submit(self._fetch_usage_target, target): (index, target)
+                for index, target in enumerate(targets)
+            }
+            for future in as_completed(futures):
+                index, target = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    result = self._usage_fetch_error_result(target, exc)
+                self._persist_usage_refresh(target, result)
+                results[index] = result
+        if any(result is None for result in results):
+            raise RuntimeError("usage result collection failed")
+        return [result for result in results if result is not None]
 
     def build_export_archive(self, names: list[str]) -> TransferArchive:
         if not names:
@@ -381,23 +395,26 @@ class CodexAuthService:
         try:
             result = fetch_account_usage_snapshot(target)
         except Exception as exc:  # noqa: BLE001
-            return AccountUsageResult(
-                name=target.name,
-                managed_state=target.managed_state,
-                account_id=target.account_id,
-                plan_type=None,
-                primary_window=None,
-                secondary_window=None,
-                credits_balance=None,
-                has_credits=None,
-                unlimited_credits=None,
-                refreshed=False,
-                refreshed_raw=None,
-                error=str(exc),
-            )
+            return self._usage_fetch_error_result(target, exc)
         if result.error is None:
             return result
         return result
+
+    def _usage_fetch_error_result(self, target: UsageQueryTarget, exc: Exception) -> AccountUsageResult:
+        return AccountUsageResult(
+            name=target.name,
+            managed_state=target.managed_state,
+            account_id=target.account_id,
+            plan_type=None,
+            primary_window=None,
+            secondary_window=None,
+            credits_balance=None,
+            has_credits=None,
+            unlimited_credits=None,
+            refreshed=False,
+            refreshed_raw=None,
+            error=str(exc),
+        )
 
     def _persist_usage_refresh(self, target: UsageQueryTarget, result: AccountUsageResult) -> None:
         if not result.refreshed or result.refreshed_raw is None:

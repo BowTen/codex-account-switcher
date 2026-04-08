@@ -1,5 +1,7 @@
 import os
 import stat
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -473,6 +475,88 @@ def test_list_usage_accounts_continues_after_per_account_failure(tmp_path, monke
     assert [item.name for item in results] == ["(live)", "travel", "work"]
     assert results[1].error == "usage failed"
     assert results[0].error is None
+
+
+def test_list_usage_accounts_limits_concurrent_fetches_to_four(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    for index in range(6):
+        service.store.save_snapshot(
+            f"account-{index}",
+            make_snapshot(f"acct-{index}"),
+            force=False,
+            mark_active=index == 0,
+        )
+
+    active_fetches = 0
+    peak_fetches = 0
+    lock = threading.Lock()
+
+    def fake_fetch(target: UsageQueryTarget) -> AccountUsageResult:
+        nonlocal active_fetches, peak_fetches
+        with lock:
+            active_fetches += 1
+            peak_fetches = max(peak_fetches, active_fetches)
+        try:
+            time.sleep(0.05)
+            return make_usage_result(target)
+        finally:
+            with lock:
+                active_fetches -= 1
+
+    monkeypatch.setattr("codex_auth.service.fetch_account_usage_snapshot", fake_fetch)
+
+    results = service.list_usage_accounts()
+
+    assert [item.name for item in results] == [f"account-{index}" for index in range(6)]
+    assert peak_fetches == 4
+
+
+def test_list_usage_accounts_returns_deterministic_order_when_completion_order_differs(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    for name, account_id in [("alpha", "acct-alpha"), ("beta", "acct-beta"), ("gamma", "acct-gamma")]:
+        service.store.save_snapshot(name, make_snapshot(account_id), force=False, mark_active=name == "alpha")
+
+    completion_order: list[str] = []
+    lock = threading.Lock()
+
+    def fake_fetch(target: UsageQueryTarget) -> AccountUsageResult:
+        delays = {"alpha": 0.2, "beta": 0.05, "gamma": 0.1}
+        time.sleep(delays[target.name])
+        with lock:
+            completion_order.append(target.name)
+        return make_usage_result(target)
+
+    monkeypatch.setattr("codex_auth.service.fetch_account_usage_snapshot", fake_fetch)
+
+    results = service.list_usage_accounts()
+    returned_order = [item.name for item in results]
+
+    assert returned_order == ["alpha", "beta", "gamma"]
+    assert completion_order != returned_order
+
+
+def test_list_usage_accounts_continues_when_a_concurrent_fetch_fails(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    for name, account_id in [("alpha", "acct-alpha"), ("beta", "acct-beta"), ("gamma", "acct-gamma")]:
+        service.store.save_snapshot(name, make_snapshot(account_id), force=False, mark_active=name == "alpha")
+
+    beta_failed = threading.Event()
+
+    def fake_fetch(target: UsageQueryTarget) -> AccountUsageResult:
+        if target.name == "beta":
+            beta_failed.set()
+            raise ValueError("usage failed")
+        beta_failed.wait()
+        return make_usage_result(target)
+
+    monkeypatch.setattr("codex_auth.service.fetch_account_usage_snapshot", fake_fetch)
+
+    results = service.list_usage_accounts()
+
+    assert [item.name for item in results] == ["alpha", "beta", "gamma"]
+    assert results[0].error is None
+    assert results[1].error == "usage failed"
+    assert results[2].error is None
 
 
 def test_list_usage_accounts_continues_when_managed_snapshot_is_malformed(tmp_path, monkeypatch) -> None:
