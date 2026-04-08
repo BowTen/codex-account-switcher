@@ -535,6 +535,65 @@ def test_list_usage_accounts_returns_deterministic_order_when_completion_order_d
     assert completion_order != returned_order
 
 
+def test_list_usage_accounts_persists_refreshed_results_in_target_order(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    for name, account_id in [("alpha", "acct-alpha"), ("beta", "acct-beta"), ("gamma", "acct-gamma")]:
+        service.store.save_snapshot(name, make_snapshot(account_id), force=False, mark_active=name == "alpha")
+
+    barrier = threading.Barrier(4)
+    release_events = {name: threading.Event() for name in ["alpha", "beta", "gamma"]}
+    completed_events = {name: threading.Event() for name in ["alpha", "beta", "gamma"]}
+    completion_order: list[str] = []
+    persistence_order: list[str] = []
+    controller_errors: list[str] = []
+    order_lock = threading.Lock()
+
+    def controller() -> None:
+        try:
+            barrier.wait()
+            for name in ["beta", "gamma", "alpha"]:
+                release_events[name].set()
+                if not completed_events[name].wait(timeout=1.0):
+                    raise AssertionError(f"{name} fetch did not complete")
+        except Exception as exc:  # noqa: BLE001
+            controller_errors.append(str(exc))
+
+    controller_thread = threading.Thread(target=controller, daemon=True)
+    controller_thread.start()
+
+    def fake_fetch(target: UsageQueryTarget) -> AccountUsageResult:
+        barrier.wait()
+        if not release_events[target.name].wait(timeout=1.0):
+            raise AssertionError(f"{target.name} fetch was not released")
+        with order_lock:
+            completion_order.append(target.name)
+        completed_events[target.name].set()
+        return make_usage_result(
+            target,
+            refreshed=True,
+            refreshed_raw=make_snapshot(f"{target.account_id}-refreshed"),
+        )
+
+    original_persist = service._persist_usage_refresh
+
+    def record_persist(target: UsageQueryTarget, result: AccountUsageResult) -> None:
+        with order_lock:
+            persistence_order.append(target.name)
+        original_persist(target, result)
+
+    monkeypatch.setattr("codex_auth.service.fetch_account_usage_snapshot", fake_fetch)
+    monkeypatch.setattr(service, "_persist_usage_refresh", record_persist)
+
+    results = service.list_usage_accounts()
+    controller_thread.join(timeout=1.0)
+
+    assert controller_thread.is_alive() is False
+    assert controller_errors == []
+    assert completion_order == ["beta", "gamma", "alpha"]
+    assert persistence_order == ["alpha", "beta", "gamma"]
+    assert [item.name for item in results] == ["alpha", "beta", "gamma"]
+
+
 def test_list_usage_accounts_continues_when_a_concurrent_fetch_fails(tmp_path, monkeypatch) -> None:
     service = CodexAuthService(home=tmp_path)
     for name, account_id in [("alpha", "acct-alpha"), ("beta", "acct-beta"), ("gamma", "acct-gamma")]:
