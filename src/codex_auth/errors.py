@@ -15,3 +15,11 @@ class InvalidPassphraseError(TransferError):
 
 class InteractiveRequiredError(TransferError):
     pass
+
+
+class UsageNetworkError(ValueError):
+    pass
+
+
+class UsageTimeoutError(ValueError):
+    pass
