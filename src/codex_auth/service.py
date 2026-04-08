@@ -25,6 +25,8 @@ from .usage_api import fetch_usage
 from .transfer import decrypt_transfer_archive, encrypt_transfer_archive
 from .validators import parse_snapshot, utc_now_iso, validate_account_name
 
+LIVE_USAGE_DISPLAY_NAME = "(live)"
+
 
 def fetch_account_usage_snapshot(target: UsageQueryTarget) -> AccountUsageResult:
     snapshot = parse_snapshot(target.raw)
@@ -327,7 +329,7 @@ class CodexAuthService:
                 return None
 
         return UsageQueryTarget(
-            name="live",
+            name=LIVE_USAGE_DISPLAY_NAME,
             managed_state="unmanaged",
             account_id=snapshot.account_id,
             raw=raw,

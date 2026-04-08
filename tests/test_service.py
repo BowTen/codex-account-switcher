@@ -276,9 +276,10 @@ def make_usage_result(
     )
 
 
-def test_list_usage_accounts_includes_unmanaged_live_account(tmp_path, monkeypatch) -> None:
+def test_list_usage_accounts_uses_noncolliding_live_display_name(tmp_path, monkeypatch) -> None:
     service = CodexAuthService(home=tmp_path)
-    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    service.store.save_snapshot("live", make_snapshot("acct-managed-live"), force=False, mark_active=True)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=False)
     service.store.write_live_auth(make_snapshot("acct-live"))
 
     monkeypatch.setattr(
@@ -288,8 +289,9 @@ def test_list_usage_accounts_includes_unmanaged_live_account(tmp_path, monkeypat
 
     results = service.list_usage_accounts()
 
-    assert [item.name for item in results] == ["live", "work"]
+    assert [item.name for item in results] == ["(live)", "live", "work"]
     assert results[0].managed_state == "unmanaged"
+    assert results[1].managed_state == "managed"
 
 
 def test_list_usage_accounts_deduplicates_matching_live_account(tmp_path, monkeypatch) -> None:
@@ -431,6 +433,6 @@ def test_list_usage_accounts_continues_after_per_account_failure(tmp_path, monke
 
     results = service.list_usage_accounts()
 
-    assert [item.name for item in results] == ["live", "travel", "work"]
+    assert [item.name for item in results] == ["(live)", "travel", "work"]
     assert results[1].error == "usage failed"
     assert results[0].error is None
