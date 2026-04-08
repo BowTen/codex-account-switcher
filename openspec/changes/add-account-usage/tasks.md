@@ -1,9 +1,9 @@
 ## 1. Usage and Refresh Foundations
 
-- [ ] 1.1 Add usage data models for rate-limit windows, rendered usage results, and query targets.
-- [ ] 1.2 Add a token refresh helper that detects near-expiry access tokens and refreshes ChatGPT OAuth credentials with the built-in client ID.
-- [ ] 1.3 Add a usage API helper that queries the ChatGPT backend usage endpoint and normalizes primary, secondary, and credits data.
-- [ ] 1.4 Add focused tests for usage payload parsing, token refresh behavior, and HTTP failure handling.
+- [x] 1.1 Add usage data models for rate-limit windows, rendered usage results, and query targets.
+- [x] 1.2 Add a token refresh helper that detects near-expiry access tokens and refreshes ChatGPT OAuth credentials with the built-in client ID.
+- [x] 1.3 Add a usage API helper that queries the ChatGPT backend usage endpoint and normalizes primary, secondary, and credits data.
+- [x] 1.4 Add focused tests for usage payload parsing, token refresh behavior, and HTTP failure handling.
 
 ## 2. Service and Storage Integration
 

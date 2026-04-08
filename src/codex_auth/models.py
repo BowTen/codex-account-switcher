@@ -77,3 +77,62 @@ class ImportResult:
     overwritten: list[str]
     renamed: list[str]
     skipped: list[str]
+
+
+@dataclass(slots=True)
+class UsageWindow:
+    used_percent: float | int | None
+    limit_window_seconds: int | None
+    reset_at: int | str | None
+    raw: dict[str, Any] | None = None
+
+    @property
+    def remaining_percent(self) -> float | int | None:
+        if self.used_percent is None:
+            return None
+        return max(0, 100 - self.used_percent)
+
+
+@dataclass(slots=True)
+class UsageCredits:
+    has_credits: bool | None
+    unlimited: bool | None
+    balance: float | int | str | None
+    raw: dict[str, Any] | None = None
+
+
+@dataclass(slots=True)
+class UsageSnapshot:
+    account_id: str
+    plan_type: str | None
+    primary_window: UsageWindow | None
+    secondary_window: UsageWindow | None
+    credits: UsageCredits | None = None
+    raw: dict[str, Any] | None = None
+
+
+@dataclass(slots=True)
+class UsageTarget:
+    name: str | None
+    account_id: str
+    managed: bool
+    auth_mode: str | None = None
+
+
+@dataclass(slots=True)
+class UsageResult:
+    target: UsageTarget
+    snapshot: UsageSnapshot | None
+    refreshed: bool = False
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class TokenRefreshResult:
+    access_token: str
+    refresh_token: str
+    id_token: str
+    account_id: str
+    expires_in: int | None = None
+    expires_at: str | None = None
+    raw: dict[str, Any] | None = None
