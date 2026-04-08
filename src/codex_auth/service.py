@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import stat
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
@@ -29,6 +31,32 @@ from .validators import parse_snapshot, utc_now_iso, validate_account_name
 
 LIVE_USAGE_DISPLAY_NAME = "(live)"
 USAGE_BATCH_MAX_WORKERS = 4
+
+
+@dataclass(slots=True)
+class _UsageTimeoutContext:
+    account_id: str
+    refreshed_raw: dict[str, object] | None
+
+
+class _UsageFetchTimeout(UsageTimeoutError):
+    def __init__(self, message: str, *, context: _UsageTimeoutContext) -> None:
+        super().__init__(message)
+        self.context = context
+
+
+@dataclass(slots=True)
+class _UsageBatchWorkItem:
+    index: int
+    target: UsageQueryTarget
+
+
+@dataclass(slots=True)
+class _UsageBatchResult:
+    index: int
+    target: UsageQueryTarget
+    result: AccountUsageResult | None = None
+    timeout: UsageTimeoutError | None = None
 
 
 def fetch_account_usage_snapshot(target: UsageQueryTarget) -> AccountUsageResult:
@@ -66,9 +94,10 @@ def fetch_account_usage_snapshot(target: UsageQueryTarget) -> AccountUsageResult
     try:
         usage = fetch_usage(access_token=access_token, account_id=account_id)
     except UsageTimeoutError as exc:
-        setattr(exc, "account_id", account_id)
-        setattr(exc, "refreshed_raw", refreshed_raw)
-        raise
+        raise _UsageFetchTimeout(
+            str(exc),
+            context=_UsageTimeoutContext(account_id=account_id, refreshed_raw=refreshed_raw),
+        ) from None
     except Exception as exc:  # noqa: BLE001
         return AccountUsageResult(
             name=target.name,
@@ -171,32 +200,58 @@ class CodexAuthService:
         results: list[AccountUsageResult | None] = [None] * len(targets)
         completed: dict[int, tuple[UsageQueryTarget, AccountUsageResult]] = {}
         next_flush_index = 0
-        executor = ThreadPoolExecutor(max_workers=USAGE_BATCH_MAX_WORKERS)
-        shutdown_wait = True
-        try:
-            futures = {
-                executor.submit(self._fetch_usage_target, target): (index, target)
-                for index, target in enumerate(targets)
-            }
-            for future in as_completed(futures):
-                index, target = futures[future]
+        worker_count = min(USAGE_BATCH_MAX_WORKERS, len(targets))
+        if worker_count == 0:
+            return []
+
+        work_queue: queue.Queue[_UsageBatchWorkItem | None] = queue.Queue()
+        result_queue: queue.Queue[_UsageBatchResult] = queue.Queue()
+        stop_event = threading.Event()
+
+        for index, target in enumerate(targets):
+            work_queue.put(_UsageBatchWorkItem(index=index, target=target))
+        for _ in range(worker_count):
+            work_queue.put(None)
+
+        def worker() -> None:
+            while True:
+                item = work_queue.get()
+                if item is None:
+                    return
+                if stop_event.is_set():
+                    continue
                 try:
-                    result = future.result()
+                    result = self._fetch_usage_target(item.target)
                 except UsageTimeoutError as exc:
-                    self._persist_usage_refresh(target, self._usage_timeout_result(target, exc))
-                    shutdown_wait = False
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    raise
+                    stop_event.set()
+                    result_queue.put(_UsageBatchResult(index=item.index, target=item.target, timeout=exc))
+                    return
                 except Exception as exc:  # noqa: BLE001
-                    result = self._usage_fetch_error_result(target, exc)
-                completed[index] = (target, result)
-                while next_flush_index in completed:
-                    flush_target, flush_result = completed.pop(next_flush_index)
-                    self._persist_usage_refresh(flush_target, flush_result)
-                    results[next_flush_index] = flush_result
-                    next_flush_index += 1
-        finally:
-            executor.shutdown(wait=shutdown_wait)
+                    result = self._usage_fetch_error_result(item.target, exc)
+                result_queue.put(_UsageBatchResult(index=item.index, target=item.target, result=result))
+
+        for worker_index in range(worker_count):
+            thread = threading.Thread(
+                target=worker,
+                name=f"usage-batch-worker-{worker_index}",
+                daemon=True,
+            )
+            thread.start()
+
+        processed = 0
+        while processed < len(targets):
+            item = result_queue.get()
+            if item.timeout is not None:
+                self._persist_usage_refresh(item.target, self._usage_timeout_result(item.target, item.timeout))
+                raise item.timeout
+            assert item.result is not None
+            processed += 1
+            completed[item.index] = (item.target, item.result)
+            while next_flush_index in completed:
+                flush_target, flush_result = completed.pop(next_flush_index)
+                self._persist_usage_refresh(flush_target, flush_result)
+                results[next_flush_index] = flush_result
+                next_flush_index += 1
         if any(result is None for result in results):
             raise RuntimeError("usage result collection failed")
         return [result for result in results if result is not None]
@@ -445,11 +500,16 @@ class CodexAuthService:
         )
 
     def _usage_timeout_result(self, target: UsageQueryTarget, exc: UsageTimeoutError) -> AccountUsageResult:
-        refreshed_raw = getattr(exc, "refreshed_raw", None)
+        if isinstance(exc, _UsageFetchTimeout):
+            account_id = exc.context.account_id
+            refreshed_raw = exc.context.refreshed_raw
+        else:
+            account_id = target.account_id
+            refreshed_raw = None
         return AccountUsageResult(
             name=target.name,
             managed_state=target.managed_state,
-            account_id=getattr(exc, "account_id", target.account_id),
+            account_id=account_id,
             plan_type=None,
             primary_window=None,
             secondary_window=None,

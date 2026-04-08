@@ -1,6 +1,9 @@
 import os
 import stat
+import subprocess
+import sys
 import threading
+import textwrap
 import time
 from pathlib import Path
 
@@ -616,6 +619,103 @@ def test_list_usage_accounts_aborts_batch_when_one_account_times_out(tmp_path, m
         releaser.cancel()
 
     assert time.perf_counter() - start < 0.2
+
+
+def test_list_usage_accounts_timeout_allows_subprocess_to_exit_promptly(tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    script_path = tmp_path / "timeout_batch_exit.py"
+    home_path = tmp_path / "home"
+    script_path.write_text(
+        textwrap.dedent(
+            f"""
+            import time
+            import threading
+            from pathlib import Path
+
+            from codex_auth import service as service_module
+            from codex_auth.errors import UsageTimeoutError
+            from codex_auth.models import AccountUsageResult
+            from codex_auth.service import CodexAuthService
+
+            def make_snapshot(account_id: str) -> dict[str, object]:
+                return {{
+                    "auth_mode": "chatgpt",
+                    "last_refresh": "2026-04-04T10:00:00Z",
+                    "tokens": {{
+                        "access_token": f"access-{{account_id}}",
+                        "refresh_token": f"refresh-{{account_id}}",
+                        "id_token": f"id-{{account_id}}",
+                        "account_id": account_id,
+                    }},
+                }}
+
+            def make_usage_result(target) -> AccountUsageResult:
+                return AccountUsageResult(
+                    name=target.name,
+                    managed_state=target.managed_state,
+                    account_id=target.account_id,
+                    plan_type="plus",
+                    primary_window=None,
+                    secondary_window=None,
+                    credits_balance=None,
+                    has_credits=None,
+                    unlimited_credits=None,
+                    refreshed=False,
+                    refreshed_raw=None,
+                    error=None,
+                )
+
+            service = CodexAuthService(home=Path({str(home_path)!r}))
+            service.store.save_snapshot("alpha", make_snapshot("acct-alpha"), force=False, mark_active=True)
+            service.store.save_snapshot("beta", make_snapshot("acct-beta"), force=False, mark_active=False)
+
+            service_module.probe_usage_endpoint = lambda: None
+
+            beta_started = threading.Event()
+
+            def fake_fetch(target):
+                if target.name == "beta":
+                    beta_started.set()
+                    time.sleep(1.0)
+                    return make_usage_result(target)
+                if not beta_started.wait(timeout=1.0):
+                    raise AssertionError("beta worker did not start")
+                raise UsageTimeoutError("usage request timed out")
+
+            service_module.fetch_account_usage_snapshot = fake_fetch
+
+            start = time.perf_counter()
+            try:
+                service.list_usage_accounts()
+            except UsageTimeoutError:
+                print(f"elapsed_in_process={{time.perf_counter() - start:.3f}}")
+                raise SystemExit(0)
+
+            raise SystemExit(2)
+            """
+        )
+    )
+
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(repo_root / "src") + os.pathsep + os.environ.get("PYTHONPATH", ""),
+    }
+
+    start = time.perf_counter()
+    completed = subprocess.run(
+        [sys.executable, str(script_path)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+        timeout=3.0,
+    )
+    elapsed = time.perf_counter() - start
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    assert "elapsed_in_process=" in completed.stdout
+    assert elapsed < 0.5
 
 
 def test_list_usage_accounts_persists_refreshed_timeout_account_before_abort(tmp_path, monkeypatch) -> None:
