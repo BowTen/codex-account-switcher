@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from codex_auth import cli as cli_module
 from codex_auth.cli import main as cli_main
 from codex_auth.models import AccountUsageResult, UsageWindow
 
@@ -101,6 +102,11 @@ def make_usage_result(
         refreshed_raw={"tokens": {}} if refreshed else None,
         error=error,
     )
+
+
+class FakeStdout:
+    def __init__(self, encoding: str | None) -> None:
+        self.encoding = encoding
 
 
 def test_cli_save_list_current_and_inspect(tmp_path) -> None:
@@ -203,60 +209,22 @@ def test_cli_usage_renders_mixed_managed_and_unmanaged_results(tmp_path, monkeyp
     assert captured.err == ""
 
 
-def test_cli_usage_prefers_unicode_progress_bars_when_supported(tmp_path, monkeypatch, capsys) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr("codex_auth.cli._unicode_usage_bars_supported", lambda: True)
+def test_unicode_usage_bars_detection_uses_stdout_encoding_for_utf8(monkeypatch) -> None:
+    monkeypatch.setattr(cli_module.sys, "stdout", FakeStdout("utf-8"))
 
-    class FakeUsageService:
-        def list_usage_accounts(self) -> list[AccountUsageResult]:
-            return [
-                make_usage_result(
-                    name="work",
-                    managed_state="managed",
-                    account_id="acct-work",
-                    primary_window=make_usage_window(used_percent=25, reset_at=1712224800),
-                    secondary_window=None,
-                ),
-            ]
+    window = make_usage_window(used_percent=25, reset_at=1712224800)
 
-    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
-
-    result = cli_main(["usage"])
-    captured = capsys.readouterr()
-
-    assert result == 0
-    assert "progress: [█████" in captured.out
-    assert "#" not in captured.out
-    assert captured.err == ""
+    assert cli_module._unicode_usage_bars_supported() is True
+    assert cli_module._render_usage_window("5h limit", window)[1] == "  progress: [███████████████░░░░░]"
 
 
-def test_cli_usage_falls_back_to_ascii_progress_bars_when_unicode_is_unsupported(
-    tmp_path, monkeypatch, capsys
-) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr("codex_auth.cli._unicode_usage_bars_supported", lambda: False)
+def test_unicode_usage_bars_detection_falls_back_for_ascii_stdout(monkeypatch) -> None:
+    monkeypatch.setattr(cli_module.sys, "stdout", FakeStdout("ascii"))
 
-    class FakeUsageService:
-        def list_usage_accounts(self) -> list[AccountUsageResult]:
-            return [
-                make_usage_result(
-                    name="work",
-                    managed_state="managed",
-                    account_id="acct-work",
-                    primary_window=make_usage_window(used_percent=25, reset_at=1712224800),
-                    secondary_window=None,
-                ),
-            ]
+    window = make_usage_window(used_percent=25, reset_at=1712224800)
 
-    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
-
-    result = cli_main(["usage"])
-    captured = capsys.readouterr()
-
-    assert result == 0
-    assert "progress: [###############-----]" in captured.out
-    assert "█" not in captured.out
-    assert captured.err == ""
+    assert cli_module._unicode_usage_bars_supported() is False
+    assert cli_module._render_usage_window("5h limit", window)[1] == "  progress: [###############-----]"
 
 
 def test_cli_usage_named_account_lookup_errors_are_concise(tmp_path) -> None:
