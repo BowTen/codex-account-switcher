@@ -5,14 +5,18 @@ from pathlib import Path
 import pytest
 
 from codex_auth import __version__
+from codex_auth import service as service_module
 from codex_auth.models import (
     AccountMetadata,
     AccountUsageResult,
     ImportPlanItem,
+    TokenRefreshResult,
     TransferAccount,
     TransferArchive,
     UsageQueryTarget,
+    UsageCredits,
     UsageWindow,
+    UsageSnapshot,
 )
 from codex_auth.service import CodexAuthService
 from codex_auth.validators import parse_snapshot
@@ -316,6 +320,84 @@ def test_get_usage_account_persists_refreshed_managed_tokens(tmp_path, monkeypat
 
     assert result.refreshed is True
     assert service.store.load_snapshot("work").raw["tokens"]["account_id"] == "acct-work-new"
+
+
+def test_get_usage_account_queries_only_named_managed_account(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    service.store.save_snapshot("travel", make_snapshot("acct-travel"), force=False, mark_active=False)
+    service.store.write_live_auth(make_snapshot("acct-live"))
+
+    queried: list[str] = []
+
+    def fake_fetch(target: UsageQueryTarget) -> AccountUsageResult:
+        queried.append(target.name)
+        return make_usage_result(target)
+
+    monkeypatch.setattr("codex_auth.service.fetch_account_usage_snapshot", fake_fetch)
+
+    result = service.get_usage_account("work")
+
+    assert result.name == "work"
+    assert queried == ["work"]
+
+
+def test_fetch_account_usage_snapshot_refreshes_near_expiry_tokens(tmp_path, monkeypatch) -> None:
+    raw = make_snapshot("acct-work")
+    target = UsageQueryTarget(
+        name="work",
+        managed_state="managed",
+        account_id="acct-work",
+        raw=raw,
+        managed_name="work",
+    )
+
+    monkeypatch.setattr(service_module, "access_token_needs_refresh", lambda access_token: True, raising=False)
+
+    refresh_calls: list[tuple[str, str, str, str]] = []
+
+    def fake_refresh(*, access_token: str, refresh_token: str, id_token: str, account_id: str):
+        refresh_calls.append((access_token, refresh_token, id_token, account_id))
+        return TokenRefreshResult(
+            access_token="access-work-new",
+            refresh_token="refresh-work-new",
+            id_token="id-work-new",
+            account_id="acct-work-new",
+            expires_in=3600,
+            expires_at="2026-04-08T10:00:00Z",
+            raw={"ok": True},
+        )
+
+    usage_calls: list[tuple[str, str]] = []
+
+    def fake_fetch_usage(*, access_token: str, account_id: str):
+        usage_calls.append((access_token, account_id))
+        return UsageSnapshot(
+            account_id=account_id,
+            plan_type="plus",
+            primary_window=UsageWindow(used_percent=5, limit_window_seconds=18000, reset_at=1775505971),
+            secondary_window=UsageWindow(used_percent=15, limit_window_seconds=604800, reset_at=1776049573),
+            credits=UsageCredits(has_credits=True, unlimited=False, balance="12.50"),
+            raw={"plan_type": "plus"},
+        )
+
+    monkeypatch.setattr(service_module, "refresh_chatgpt_credentials", fake_refresh, raising=False)
+    monkeypatch.setattr(service_module, "fetch_usage", fake_fetch_usage, raising=False)
+
+    result = service_module.fetch_account_usage_snapshot(target)
+
+    assert refresh_calls == [("access-acct-work", "refresh-acct-work", "id-acct-work", "acct-work")]
+    assert usage_calls == [("access-work-new", "acct-work-new")]
+    assert result.refreshed is True
+    assert result.refreshed_raw is not None
+    assert result.refreshed_raw["tokens"]["access_token"] == "access-work-new"
+    assert result.refreshed_raw["tokens"]["refresh_token"] == "refresh-work-new"
+    assert result.refreshed_raw["tokens"]["id_token"] == "id-work-new"
+    assert result.refreshed_raw["tokens"]["account_id"] == "acct-work-new"
+    assert result.refreshed_raw["last_refresh"] == "2026-04-08T10:00:00Z"
+    assert result.credits_balance == "12.50"
+    assert result.has_credits is True
+    assert result.unlimited_credits is False
 
 
 def test_get_usage_account_syncs_live_auth_for_current_account(tmp_path, monkeypatch) -> None:

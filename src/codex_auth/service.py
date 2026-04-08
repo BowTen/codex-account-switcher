@@ -20,12 +20,67 @@ from .models import (
     UseResult,
 )
 from .store import AccountStore
+from .token_refresh import access_token_needs_refresh, refresh_chatgpt_credentials
+from .usage_api import fetch_usage
 from .transfer import decrypt_transfer_archive, encrypt_transfer_archive
 from .validators import parse_snapshot, utc_now_iso, validate_account_name
 
 
 def fetch_account_usage_snapshot(target: UsageQueryTarget) -> AccountUsageResult:
-    raise NotImplementedError("usage fetch helper is not available")
+    snapshot = parse_snapshot(target.raw)
+    raw = snapshot.raw
+    tokens = raw["tokens"]
+
+    access_token = tokens["access_token"]
+    refresh_token = tokens["refresh_token"]
+    id_token = tokens["id_token"]
+    account_id = snapshot.account_id
+    refreshed = False
+    refreshed_raw: dict[str, object] | None = None
+
+    if access_token_needs_refresh(access_token):
+        refreshed_tokens = refresh_chatgpt_credentials(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            id_token=id_token,
+            account_id=account_id,
+        )
+        refreshed = True
+        account_id = refreshed_tokens.account_id or account_id
+        access_token = refreshed_tokens.access_token
+        refreshed_raw = dict(raw)
+        refreshed_raw["tokens"] = {
+            **tokens,
+            "access_token": refreshed_tokens.access_token,
+            "refresh_token": refreshed_tokens.refresh_token,
+            "id_token": refreshed_tokens.id_token,
+            "account_id": account_id,
+        }
+        refreshed_raw["last_refresh"] = refreshed_tokens.expires_at or utc_now_iso()
+
+    usage = fetch_usage(access_token=access_token, account_id=account_id)
+    credits_balance: str | None = None
+    has_credits: bool | None = None
+    unlimited_credits: bool | None = None
+    if usage.credits is not None:
+        credits_balance = None if usage.credits.balance is None else str(usage.credits.balance)
+        has_credits = usage.credits.has_credits
+        unlimited_credits = usage.credits.unlimited
+
+    return AccountUsageResult(
+        name=target.name,
+        managed_state=target.managed_state,
+        account_id=account_id,
+        plan_type=usage.plan_type,
+        primary_window=usage.primary_window,
+        secondary_window=usage.secondary_window,
+        credits_balance=credits_balance,
+        has_credits=has_credits,
+        unlimited_credits=unlimited_credits,
+        refreshed=refreshed,
+        refreshed_raw=refreshed_raw,
+        error=None,
+    )
 
 
 class CodexAuthService:
