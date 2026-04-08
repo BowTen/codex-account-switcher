@@ -378,6 +378,42 @@ def test_cli_usage_batch_mixed_success_returns_zero_and_keeps_errors_visible(tmp
     assert captured.err == ""
 
 
+def test_cli_usage_reports_preflight_network_failure(tmp_path, monkeypatch, capsys) -> None:
+    from codex_auth.errors import UsageNetworkError
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    class FakeUsageService:
+        def list_usage_accounts(self):
+            raise UsageNetworkError("usage endpoint unreachable: network is unreachable")
+
+    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
+
+    result = cli_main(["usage"])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert "error: usage endpoint unreachable: network is unreachable" in captured.err
+
+
+def test_cli_usage_reports_timeout_failure(tmp_path, monkeypatch, capsys) -> None:
+    from codex_auth.errors import UsageTimeoutError
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    class FakeUsageService:
+        def list_usage_accounts(self):
+            raise UsageTimeoutError("usage request timed out")
+
+    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
+
+    result = cli_main(["usage"])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert "error: usage request timed out" in captured.err
+
+
 def test_cli_use_switches_to_a_saved_account(tmp_path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
