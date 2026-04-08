@@ -48,11 +48,32 @@ def test_parse_usage_payload_normalizes_primary_secondary_and_credits() -> None:
     assert snapshot.credits.balance == "0"
 
 
+def test_parse_usage_payload_allows_missing_rate_limit_windows() -> None:
+    from codex_auth.usage_api import parse_usage_payload
+
+    snapshot = parse_usage_payload(
+        {
+            "plan_type": "chatgpt_plus",
+            "credits": {
+                "has_credits": False,
+                "unlimited": True,
+                "balance": "0",
+            },
+        },
+        account_id="acct-123",
+    )
+
+    assert snapshot.plan_type == "chatgpt_plus"
+    assert snapshot.primary_window is None
+    assert snapshot.secondary_window is None
+    assert snapshot.credits.unlimited is True
+
+
 def test_refresh_credentials_preserves_missing_fields_and_recovers_account_id() -> None:
     from codex_auth.token_refresh import refresh_chatgpt_credentials
 
     refresh_token = "refresh-token"
-    id_payload = {"sub": "acct-123"}
+    id_payload = {"account_id": "acct-123", "sub": "acct-sub"}
     id_token = ".".join(
         [
             base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("="),
@@ -80,6 +101,29 @@ def test_refresh_credentials_preserves_missing_fields_and_recovers_account_id() 
     assert result.refresh_token == refresh_token
     assert result.id_token == id_token
     assert result.account_id == "acct-123"
+
+
+def test_refresh_credentials_preserves_original_account_id_when_explicit_claim_missing() -> None:
+    from codex_auth.token_refresh import refresh_chatgpt_credentials
+
+    id_payload = {"sub": "acct-sub"}
+    id_token = ".".join(
+        [
+            base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("="),
+            base64.urlsafe_b64encode(json.dumps(id_payload).encode()).decode().rstrip("="),
+            "",
+        ]
+    )
+
+    result = refresh_chatgpt_credentials(
+        access_token="old-access",
+        refresh_token="refresh-token",
+        id_token="old-id",
+        account_id="acct-old",
+        fetch_json=lambda *args, **kwargs: {"access_token": "new-access", "id_token": id_token},
+    )
+
+    assert result.account_id == "acct-old"
 
 
 def test_refresh_credentials_rejects_missing_access_token() -> None:

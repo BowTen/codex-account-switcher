@@ -45,9 +45,6 @@ def parse_usage_payload(payload: Mapping[str, Any], *, account_id: str = "") -> 
     secondary = _parse_window(_first_mapping(rate_limit or {}, "secondary_window"))
     credits = _parse_credits(_first_mapping(payload, "credits"))
 
-    if primary is None and secondary is None:
-        raise ValueError("usage payload missing rate limit data")
-
     return UsageSnapshot(
         account_id=account_id,
         plan_type=plan_type,

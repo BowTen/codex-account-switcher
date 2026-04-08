@@ -130,7 +130,7 @@ def _account_id_from_id_token(id_token: str) -> str | None:
     payload = _decode_jwt_payload(id_token)
     if payload is None:
         return None
-    for key in ("account_id", "sub", "https://chatgpt.com/account_id", "https://chat.openai.com/account_id"):
+    for key in ("account_id", "https://chatgpt.com/account_id", "https://chat.openai.com/account_id"):
         value = payload.get(key)
         if isinstance(value, str) and value:
             return value
