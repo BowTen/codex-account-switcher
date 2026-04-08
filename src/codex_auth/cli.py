@@ -236,6 +236,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "usage":
             if args.name:
                 result = service.get_usage_account(args.name)
+                if result.error is not None:
+                    raise ValueError(result.error)
                 for line in _render_usage_result(result):
                     print(line)
                 return 0 if result.error is None else 1

@@ -35,6 +35,25 @@ def run_cli(home: Path, *args: str, path_prefix: str | None = None) -> subproces
     )
 
 
+def run_cli_with_pythonpath(
+    home: Path,
+    *args: str,
+    pythonpath_entries: list[Path],
+    path_prefix: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "HOME": str(home)}
+    env["PYTHONPATH"] = os.pathsep.join([str(path) for path in pythonpath_entries])
+    if path_prefix:
+        env["PATH"] = f"{path_prefix}:{env['PATH']}"
+    return subprocess.run(
+        [sys.executable, "-m", "codex_auth", *args],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
 def make_snapshot(account_id: str) -> dict[str, object]:
     return {
         "auth_mode": "chatgpt",
@@ -184,22 +203,44 @@ def test_cli_usage_renders_mixed_managed_and_unmanaged_results(tmp_path, monkeyp
     assert captured.err == ""
 
 
-def test_cli_usage_named_account_lookup_errors_are_concise(tmp_path, monkeypatch, capsys) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+def test_cli_usage_named_account_lookup_errors_are_concise(tmp_path) -> None:
+    patch_dir = tmp_path / "patches"
+    patch_dir.mkdir()
+    (patch_dir / "sitecustomize.py").write_text(
+        "from codex_auth import cli\n"
+        "from codex_auth.models import AccountUsageResult\n"
+        "\n"
+        "class FakeUsageService:\n"
+        "    def get_usage_account(self, name):\n"
+        "        return AccountUsageResult(\n"
+        "            name=name,\n"
+        "            managed_state='managed',\n"
+        "            account_id='acct-missing',\n"
+        "            plan_type='chatgpt',\n"
+        "            primary_window=None,\n"
+        "            secondary_window=None,\n"
+        "            credits_balance=None,\n"
+        "            has_credits=None,\n"
+        "            unlimited_credits=None,\n"
+        "            refreshed=False,\n"
+        "            refreshed_raw=None,\n"
+        "            error='usage request failed: 404 Not Found',\n"
+        "        )\n"
+        "\n"
+        "cli.CodexAuthService = FakeUsageService\n"
+    )
 
-    class FakeUsageService:
-        def get_usage_account(self, name: str) -> AccountUsageResult:
-            raise ValueError(f"Unknown account: {name}")
+    result = run_cli_with_pythonpath(
+        tmp_path,
+        "usage",
+        "missing",
+        pythonpath_entries=[patch_dir, ROOT / "src"],
+    )
 
-    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
-
-    result = cli_main(["usage", "missing"])
-    captured = capsys.readouterr()
-
-    assert result == 1
-    assert captured.out == ""
-    assert "error: Unknown account: missing" in captured.err
-    assert "Traceback" not in captured.err
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "error: usage request failed: 404 Not Found" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_cli_usage_batch_mixed_success_returns_zero_and_keeps_errors_visible(tmp_path, monkeypatch, capsys) -> None:
@@ -231,7 +272,7 @@ def test_cli_usage_batch_mixed_success_returns_zero_and_keeps_errors_visible(tmp
     captured = capsys.readouterr()
 
     assert result == 0
-    assert "account: work" in captured.out
+    assert "5h limit: 90% remaining" in captured.out
     assert "account: travel" in captured.out
     assert "error: usage request failed: 429 Too Many Requests" in captured.out
     assert captured.err == ""
