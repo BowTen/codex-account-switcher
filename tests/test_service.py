@@ -388,6 +388,23 @@ def test_get_usage_account_queries_only_named_managed_account(tmp_path, monkeypa
     assert queried == ["work"]
 
 
+def test_get_usage_account_runs_preflight_before_fetching_named_account(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+
+    events: list[str] = []
+
+    monkeypatch.setattr("codex_auth.service.probe_usage_endpoint", lambda: events.append("probe"))
+    monkeypatch.setattr(
+        "codex_auth.service.fetch_account_usage_snapshot",
+        lambda target: events.append(target.name) or make_usage_result(target),
+    )
+
+    service.get_usage_account("work")
+
+    assert events == ["probe", "work"]
+
+
 def test_list_usage_accounts_runs_preflight_before_fetching_targets(tmp_path, monkeypatch) -> None:
     service = CodexAuthService(home=tmp_path)
     service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
