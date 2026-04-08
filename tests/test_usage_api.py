@@ -82,6 +82,19 @@ def test_refresh_credentials_preserves_missing_fields_and_recovers_account_id() 
     assert result.account_id == "acct-123"
 
 
+def test_refresh_credentials_rejects_missing_access_token() -> None:
+    from codex_auth.token_refresh import refresh_chatgpt_credentials
+
+    with pytest.raises(ValueError, match="access_token"):
+        refresh_chatgpt_credentials(
+            access_token="old-access",
+            refresh_token="refresh-token",
+            id_token="old-id",
+            account_id="acct-old",
+            fetch_json=lambda *args, **kwargs: {"refresh_token": "new-refresh"},
+        )
+
+
 def test_access_token_needs_refresh_uses_jwt_exp() -> None:
     from codex_auth.token_refresh import access_token_needs_refresh
 
@@ -123,6 +136,71 @@ def test_fetch_usage_raises_concise_value_error_for_http_failure(monkeypatch: py
             access_token="token",
             account_id="acct-123",
         )
+
+
+def test_refresh_request_uses_chatgpt_oauth_endpoint_and_client_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    from codex_auth import token_refresh
+
+    captured: dict[str, object] = {}
+
+    class Response:
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"access_token":"new-access","id_token":"new-id","refresh_token":"new-refresh"}'
+
+    def fake_urlopen(request):
+        captured["url"] = request.full_url
+        captured["data"] = request.data.decode()
+        captured["headers"] = dict(request.header_items())
+        return Response()
+
+    monkeypatch.setattr(token_refresh.urllib.request, "urlopen", fake_urlopen)
+
+    token_refresh.refresh_chatgpt_credentials(
+        access_token="old-access",
+        refresh_token="refresh-token",
+        id_token="old-id",
+        account_id="acct-old",
+    )
+
+    assert captured["url"] == "https://auth.openai.com/oauth/token"
+    assert "client_id=app_EMoamEEZ73f0CkXaXp7hrann" in captured["data"]
+
+
+def test_usage_request_sends_expected_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+    from codex_auth import usage_api
+
+    captured: dict[str, object] = {}
+
+    class Response:
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"plan_type":"chatgpt_plus","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000,"reset_at":1712570400}},"credits":{"has_credits":true,"unlimited":false,"balance":"0"}}'
+
+    def fake_urlopen(request):
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.header_items())
+        return Response()
+
+    monkeypatch.setattr(usage_api.urllib.request, "urlopen", fake_urlopen)
+
+    usage_api.fetch_usage(access_token="token", account_id="acct-123")
+
+    headers = captured["headers"]
+    assert captured["url"] == "https://chatgpt.com/backend-api/wham/usage"
+    assert headers["Authorization"] == "Bearer token"
+    assert headers["Chatgpt-account-id"] == "acct-123"
+    assert headers["User-agent"] == "codex-cli/1.0.0"
 
 
 def test_refresh_credentials_raises_concise_value_error_for_http_failure(monkeypatch: pytest.MonkeyPatch) -> None:

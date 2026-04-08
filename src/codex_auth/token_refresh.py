@@ -61,7 +61,7 @@ def refresh_chatgpt_credentials(
     if not isinstance(response, Mapping):
         raise ValueError("refresh response was not a JSON object")
 
-    new_access_token = _string_or_default(response.get("access_token"), access_token, field_name="access_token")
+    new_access_token = _required_string(response.get("access_token"), field_name="access_token")
     new_refresh_token = _string_or_default(response.get("refresh_token"), refresh_token, field_name="refresh_token")
     new_id_token = _string_or_default(response.get("id_token"), id_token, field_name="id_token")
     new_account_id = _account_id_from_id_token(new_id_token) or account_id
@@ -143,3 +143,9 @@ def _string_or_default(value: Any, default: str, *, field_name: str) -> str:
     if isinstance(value, str) and value:
         return value
     raise ValueError(f"refresh response field {field_name} must be a non-empty string")
+
+
+def _required_string(value: Any, *, field_name: str) -> str:
+    if isinstance(value, str) and value:
+        return value
+    raise ValueError(f"refresh response missing required field {field_name}")
