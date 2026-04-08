@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import socket
 from typing import Any, Callable, Mapping
@@ -21,8 +22,10 @@ def probe_usage_endpoint(
     req = urllib.request.Request(USAGE_URL, method="GET")
     open_url = opener or urllib.request.urlopen
     try:
-        with open_url(req, timeout=timeout):
+        with _open_url(open_url, req, timeout=timeout):
             return None
+    except (TimeoutError, socket.timeout):
+        raise UsageTimeoutError("usage endpoint probe timed out") from None
     except urllib.error.HTTPError:
         return None
     except urllib.error.URLError as exc:
@@ -46,8 +49,10 @@ def fetch_usage(
 
     open_url = opener or urllib.request.urlopen
     try:
-        with open_url(req, timeout=timeout) as response:
+        with _open_url(open_url, req, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
+    except (TimeoutError, socket.timeout):
+        raise UsageTimeoutError("usage request timed out") from None
     except urllib.error.HTTPError as exc:
         raise ValueError(f"usage request failed: {exc.code} {exc.reason}") from None
     except urllib.error.URLError as exc:
@@ -67,6 +72,34 @@ def _is_timeout_reason(reason: Any) -> bool:
         return True
     if isinstance(reason, str) and "timed out" in reason.lower():
         return True
+    return False
+
+
+def _open_url(
+    open_url: Callable[..., Any],
+    request: urllib.request.Request,
+    *,
+    timeout: float,
+) -> Any:
+    if _opener_accepts_timeout(open_url):
+        return open_url(request, timeout=timeout)
+    return open_url(request)
+
+
+def _opener_accepts_timeout(open_url: Callable[..., Any]) -> bool:
+    try:
+        signature = inspect.signature(open_url)
+    except (TypeError, ValueError):
+        return True
+
+    for parameter in signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == "timeout" and parameter.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            return True
     return False
 
 

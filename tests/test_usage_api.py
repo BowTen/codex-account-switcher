@@ -238,6 +238,102 @@ def test_fetch_usage_raises_usage_timeout_error(monkeypatch: pytest.MonkeyPatch)
         usage_api.fetch_usage(access_token="token", account_id="acct-123")
 
 
+def test_probe_usage_endpoint_maps_direct_timeout_to_usage_timeout_error() -> None:
+    from codex_auth import usage_api
+    from codex_auth.errors import UsageTimeoutError
+
+    def opener(request, **kwargs):
+        raise TimeoutError("timed out")
+
+    with pytest.raises(UsageTimeoutError, match="usage endpoint probe timed out"):
+        usage_api.probe_usage_endpoint(opener=opener)
+
+
+def test_fetch_usage_maps_direct_timeout_to_usage_timeout_error() -> None:
+    from codex_auth import usage_api
+    from codex_auth.errors import UsageTimeoutError
+
+    def opener(request, **kwargs):
+        raise TimeoutError("timed out")
+
+    with pytest.raises(UsageTimeoutError, match="usage request timed out"):
+        usage_api.fetch_usage(access_token="token", account_id="acct-123", opener=opener)
+
+
+def test_fetch_usage_supports_one_argument_openers_without_timeout_keyword() -> None:
+    from codex_auth import usage_api
+
+    class Response:
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"plan_type":"chatgpt_plus"}'
+
+    called: dict[str, object] = {}
+
+    def opener(request):
+        called["request"] = request
+        return Response()
+
+    usage_api.fetch_usage(access_token="token", account_id="acct-123", opener=opener)
+
+    assert called["request"].full_url == usage_api.USAGE_URL
+
+
+def test_fetch_usage_forwards_non_default_timeout_when_supported() -> None:
+    from codex_auth import usage_api
+
+    seen: dict[str, object] = {}
+
+    class Response:
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"plan_type":"chatgpt_plus"}'
+
+    def opener(request, timeout=None):
+        seen["timeout"] = timeout
+        return Response()
+
+    usage_api.fetch_usage(
+        access_token="token",
+        account_id="acct-123",
+        opener=opener,
+        timeout=3.5,
+    )
+
+    assert seen["timeout"] == 3.5
+
+
+def test_probe_usage_endpoint_forwards_non_default_timeout_when_supported() -> None:
+    from codex_auth import usage_api
+
+    seen: dict[str, object] = {}
+
+    class Response:
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    def opener(request, timeout=None):
+        seen["timeout"] = timeout
+        return Response()
+
+    usage_api.probe_usage_endpoint(opener=opener, timeout=4.25)
+
+    assert seen["timeout"] == 4.25
+
+
 def test_refresh_request_uses_chatgpt_oauth_endpoint_and_client_id(monkeypatch: pytest.MonkeyPatch) -> None:
     from codex_auth import token_refresh
 
