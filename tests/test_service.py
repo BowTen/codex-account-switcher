@@ -546,7 +546,8 @@ def test_list_usage_accounts_continues_when_a_concurrent_fetch_fails(tmp_path, m
         if target.name == "beta":
             beta_failed.set()
             raise ValueError("usage failed")
-        beta_failed.wait()
+        if not beta_failed.wait(timeout=1.0):
+            raise AssertionError("beta fetch did not start")
         return make_usage_result(target)
 
     monkeypatch.setattr("codex_auth.service.fetch_account_usage_snapshot", fake_fetch)

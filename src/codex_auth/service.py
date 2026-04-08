@@ -158,6 +158,8 @@ class CodexAuthService:
     def list_usage_accounts(self) -> list[AccountUsageResult]:
         targets = self._list_usage_targets()
         results: list[AccountUsageResult | None] = [None] * len(targets)
+        completed: dict[int, tuple[UsageQueryTarget, AccountUsageResult]] = {}
+        next_flush_index = 0
         with ThreadPoolExecutor(max_workers=USAGE_BATCH_MAX_WORKERS) as executor:
             futures = {
                 executor.submit(self._fetch_usage_target, target): (index, target)
@@ -169,8 +171,12 @@ class CodexAuthService:
                     result = future.result()
                 except Exception as exc:  # noqa: BLE001
                     result = self._usage_fetch_error_result(target, exc)
-                self._persist_usage_refresh(target, result)
-                results[index] = result
+                completed[index] = (target, result)
+                while next_flush_index in completed:
+                    flush_target, flush_result = completed.pop(next_flush_index)
+                    self._persist_usage_refresh(flush_target, flush_result)
+                    results[next_flush_index] = flush_result
+                    next_flush_index += 1
         if any(result is None for result in results):
             raise RuntimeError("usage result collection failed")
         return [result for result in results if result is not None]
