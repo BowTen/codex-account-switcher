@@ -324,6 +324,43 @@ def test_get_usage_account_persists_refreshed_managed_tokens(tmp_path, monkeypat
     assert service.store.load_snapshot("work").raw["tokens"]["account_id"] == "acct-work-new"
 
 
+def test_get_usage_account_persists_refreshed_tokens_even_when_usage_fails(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    raw = make_snapshot("acct-work")
+    service.store.save_snapshot("work", raw, force=False, mark_active=True)
+    service.store.write_live_auth(raw)
+
+    monkeypatch.setattr(service_module, "access_token_needs_refresh", lambda access_token: True, raising=False)
+    monkeypatch.setattr(
+        service_module,
+        "refresh_chatgpt_credentials",
+        lambda **kwargs: TokenRefreshResult(
+            access_token="access-work-new",
+            refresh_token="refresh-work-new",
+            id_token="id-work-new",
+            account_id="acct-work-new",
+            expires_in=3600,
+            expires_at="2026-04-08T10:00:00Z",
+            raw={"ok": True},
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "fetch_usage",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("usage failed")),
+        raising=False,
+    )
+
+    result = service.get_usage_account("work")
+
+    assert result.error == "usage failed"
+    assert result.refreshed is True
+    assert result.refreshed_raw is not None
+    assert service.store.load_snapshot("work").raw["tokens"]["account_id"] == "acct-work-new"
+    assert service.store.read_live_auth()["tokens"]["account_id"] == "acct-work-new"
+
+
 def test_get_usage_account_queries_only_named_managed_account(tmp_path, monkeypatch) -> None:
     service = CodexAuthService(home=tmp_path)
     service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
@@ -436,3 +473,31 @@ def test_list_usage_accounts_continues_after_per_account_failure(tmp_path, monke
     assert [item.name for item in results] == ["(live)", "travel", "work"]
     assert results[1].error == "usage failed"
     assert results[0].error is None
+
+
+def test_list_usage_accounts_continues_when_managed_snapshot_is_malformed(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("broken", make_snapshot("acct-broken"), force=False, mark_active=True)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=False)
+    service.store.accounts_dir.joinpath("broken.json").write_text("{broken json")
+
+    monkeypatch.setattr(service_module, "access_token_needs_refresh", lambda access_token: False, raising=False)
+    monkeypatch.setattr(
+        service_module,
+        "fetch_usage",
+        lambda **kwargs: UsageSnapshot(
+            account_id=kwargs["account_id"],
+            plan_type="plus",
+            primary_window=UsageWindow(used_percent=7, limit_window_seconds=18000, reset_at=1775505971),
+            secondary_window=UsageWindow(used_percent=30, limit_window_seconds=604800, reset_at=1776049573),
+            credits=UsageCredits(has_credits=False, unlimited=False, balance="0"),
+            raw={"plan_type": "plus"},
+        ),
+        raising=False,
+    )
+
+    results = service.list_usage_accounts()
+
+    assert [item.name for item in results] == ["broken", "work"]
+    assert results[0].error is not None
+    assert results[1].error is None

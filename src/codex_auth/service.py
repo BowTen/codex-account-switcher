@@ -60,7 +60,23 @@ def fetch_account_usage_snapshot(target: UsageQueryTarget) -> AccountUsageResult
         }
         refreshed_raw["last_refresh"] = refreshed_tokens.expires_at or utc_now_iso()
 
-    usage = fetch_usage(access_token=access_token, account_id=account_id)
+    try:
+        usage = fetch_usage(access_token=access_token, account_id=account_id)
+    except Exception as exc:  # noqa: BLE001
+        return AccountUsageResult(
+            name=target.name,
+            managed_state=target.managed_state,
+            account_id=account_id,
+            plan_type=None,
+            primary_window=None,
+            secondary_window=None,
+            credits_balance=None,
+            has_credits=None,
+            unlimited_credits=None,
+            refreshed=refreshed,
+            refreshed_raw=refreshed_raw,
+            error=str(exc),
+        )
     credits_balance: str | None = None
     has_credits: bool | None = None
     unlimited_credits: bool | None = None
@@ -343,13 +359,19 @@ class CodexAuthService:
             targets.append(live_target)
 
         for metadata in self.store.list_metadata():
-            snapshot = self.store.load_snapshot(metadata.name)
+            try:
+                snapshot = self.store.load_snapshot(metadata.name)
+                raw = snapshot.raw
+                account_id = snapshot.account_id
+            except Exception:
+                raw = {}
+                account_id = metadata.account_id
             targets.append(
                 UsageQueryTarget(
                     name=metadata.name,
                     managed_state="managed",
-                    account_id=snapshot.account_id,
-                    raw=snapshot.raw,
+                    account_id=account_id,
+                    raw=raw,
                     managed_name=metadata.name,
                 )
             )
@@ -378,7 +400,7 @@ class CodexAuthService:
         return result
 
     def _persist_usage_refresh(self, target: UsageQueryTarget, result: AccountUsageResult) -> None:
-        if result.error is not None or not result.refreshed or result.refreshed_raw is None:
+        if not result.refreshed or result.refreshed_raw is None:
             return
         if target.managed_name is not None:
             self.store.overwrite_snapshot(target.managed_name, result.refreshed_raw)
