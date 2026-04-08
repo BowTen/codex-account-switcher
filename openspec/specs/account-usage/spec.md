@@ -1,4 +1,7 @@
-## ADDED Requirements
+## Purpose
+Describe how the CLI queries and renders Codex account usage limits for managed snapshots and the current live account.
+
+## Requirements
 
 ### Requirement: Query usage for managed and current live accounts
 
