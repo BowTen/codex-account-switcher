@@ -109,6 +109,22 @@ class FakeStdout:
         self.encoding = encoding
 
 
+class FakeTextStream:
+    def __init__(self, encoding: str | None) -> None:
+        self.encoding = encoding
+        self._chunks: list[str] = []
+
+    def write(self, text: str) -> int:
+        self._chunks.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+    def getvalue(self) -> str:
+        return "".join(self._chunks)
+
+
 def test_cli_save_list_current_and_inspect(tmp_path) -> None:
     codex_dir = tmp_path / ".codex"
     codex_dir.mkdir()
@@ -225,6 +241,66 @@ def test_unicode_usage_bars_detection_falls_back_for_ascii_stdout(monkeypatch) -
 
     assert cli_module._unicode_usage_bars_supported() is False
     assert cli_module._render_usage_window("5h limit", window)[1] == "  progress: [###############-----]"
+
+
+def test_cli_usage_renders_unicode_progress_bars_when_stdout_supports_it(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    stdout = FakeTextStream("utf-8")
+    stderr = FakeTextStream("utf-8")
+    monkeypatch.setattr(cli_module.sys, "stdout", stdout)
+    monkeypatch.setattr(cli_module.sys, "stderr", stderr)
+
+    class FakeUsageService:
+        def list_usage_accounts(self) -> list[AccountUsageResult]:
+            return [
+                make_usage_result(
+                    name="work",
+                    managed_state="managed",
+                    account_id="acct-work",
+                    primary_window=make_usage_window(used_percent=25, reset_at=1712224800),
+                    secondary_window=None,
+                ),
+            ]
+
+    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
+
+    result = cli_main(["usage"])
+
+    assert result == 0
+    assert "progress: [███████████████░░░░░]" in stdout.getvalue()
+    assert "#" not in stdout.getvalue()
+    assert stderr.getvalue() == ""
+
+
+def test_cli_usage_falls_back_to_ascii_progress_bars_when_stdout_is_ascii(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    stdout = FakeTextStream("ascii")
+    stderr = FakeTextStream("ascii")
+    monkeypatch.setattr(cli_module.sys, "stdout", stdout)
+    monkeypatch.setattr(cli_module.sys, "stderr", stderr)
+
+    class FakeUsageService:
+        def list_usage_accounts(self) -> list[AccountUsageResult]:
+            return [
+                make_usage_result(
+                    name="work",
+                    managed_state="managed",
+                    account_id="acct-work",
+                    primary_window=make_usage_window(used_percent=25, reset_at=1712224800),
+                    secondary_window=None,
+                ),
+            ]
+
+    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
+
+    result = cli_main(["usage"])
+
+    assert result == 0
+    assert "progress: [###############-----]" in stdout.getvalue()
+    assert "█" not in stdout.getvalue()
+    assert stderr.getvalue() == ""
 
 
 def test_cli_usage_named_account_lookup_errors_are_concise(tmp_path) -> None:
