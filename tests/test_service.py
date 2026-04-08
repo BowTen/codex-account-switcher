@@ -54,6 +54,11 @@ def make_snapshot_with_access_token(account_id: str, access_token: str) -> dict[
     return snapshot
 
 
+@pytest.fixture(autouse=True)
+def stub_usage_preflight(monkeypatch) -> None:
+    monkeypatch.setattr(service_module, "probe_usage_endpoint", lambda: None, raising=False)
+
+
 def test_use_account_switches_live_auth_and_marks_verified(tmp_path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -383,6 +388,23 @@ def test_get_usage_account_queries_only_named_managed_account(tmp_path, monkeypa
     assert queried == ["work"]
 
 
+def test_list_usage_accounts_runs_preflight_before_fetching_targets(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+
+    events: list[str] = []
+
+    monkeypatch.setattr("codex_auth.service.probe_usage_endpoint", lambda: events.append("probe"))
+    monkeypatch.setattr(
+        "codex_auth.service.fetch_account_usage_snapshot",
+        lambda target: events.append(target.name) or make_usage_result(target),
+    )
+
+    service.list_usage_accounts()
+
+    assert events == ["probe", "work"]
+
+
 def test_fetch_account_usage_snapshot_refreshes_near_expiry_tokens(tmp_path, monkeypatch) -> None:
     raw = make_snapshot("acct-work")
     target = UsageQueryTarget(
@@ -475,6 +497,46 @@ def test_list_usage_accounts_continues_after_per_account_failure(tmp_path, monke
     assert [item.name for item in results] == ["(live)", "travel", "work"]
     assert results[1].error == "usage failed"
     assert results[0].error is None
+
+
+def test_list_usage_accounts_aborts_batch_when_one_account_times_out(tmp_path, monkeypatch) -> None:
+    from codex_auth.errors import UsageTimeoutError
+
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("alpha", make_snapshot("acct-alpha"), force=False, mark_active=True)
+    service.store.save_snapshot("beta", make_snapshot("acct-beta"), force=False, mark_active=False)
+
+    monkeypatch.setattr("codex_auth.service.probe_usage_endpoint", lambda: None)
+
+    def fake_fetch(target: UsageQueryTarget) -> AccountUsageResult:
+        if target.name == "alpha":
+            raise UsageTimeoutError("usage request timed out")
+        return make_usage_result(target)
+
+    monkeypatch.setattr("codex_auth.service.fetch_account_usage_snapshot", fake_fetch)
+
+    with pytest.raises(UsageTimeoutError, match="usage request timed out"):
+        service.list_usage_accounts()
+
+
+def test_list_usage_accounts_continues_for_non_timeout_account_errors(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("alpha", make_snapshot("acct-alpha"), force=False, mark_active=True)
+    service.store.save_snapshot("beta", make_snapshot("acct-beta"), force=False, mark_active=False)
+
+    monkeypatch.setattr("codex_auth.service.probe_usage_endpoint", lambda: None)
+
+    def fake_fetch(target: UsageQueryTarget) -> AccountUsageResult:
+        if target.name == "alpha":
+            return make_usage_result(target, error="usage request failed: 429 Too Many Requests")
+        return make_usage_result(target)
+
+    monkeypatch.setattr("codex_auth.service.fetch_account_usage_snapshot", fake_fetch)
+
+    results = service.list_usage_accounts()
+
+    assert results[0].error == "usage request failed: 429 Too Many Requests"
+    assert results[1].error is None
 
 
 def test_list_usage_accounts_limits_concurrent_fetches_to_four(tmp_path, monkeypatch) -> None:

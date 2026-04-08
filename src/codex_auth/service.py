@@ -10,6 +10,7 @@ from typing import Mapping
 
 from . import __version__
 from .codex_cli import run_login_status
+from .errors import UsageTimeoutError
 from .models import (
     AccountMetadata,
     AccountUsageResult,
@@ -22,7 +23,7 @@ from .models import (
 )
 from .store import AccountStore
 from .token_refresh import access_token_needs_refresh, refresh_chatgpt_credentials
-from .usage_api import fetch_usage
+from .usage_api import fetch_usage, probe_usage_endpoint
 from .transfer import decrypt_transfer_archive, encrypt_transfer_archive
 from .validators import parse_snapshot, utc_now_iso, validate_account_name
 
@@ -150,12 +151,14 @@ class CodexAuthService:
         return self.store.list_metadata()
 
     def get_usage_account(self, name: str) -> AccountUsageResult:
+        probe_usage_endpoint()
         target = self._build_managed_usage_target(name)
         result = self._fetch_usage_target(target)
         self._persist_usage_refresh(target, result)
         return result
 
     def list_usage_accounts(self) -> list[AccountUsageResult]:
+        probe_usage_endpoint()
         targets = self._list_usage_targets()
         results: list[AccountUsageResult | None] = [None] * len(targets)
         completed: dict[int, tuple[UsageQueryTarget, AccountUsageResult]] = {}
@@ -169,6 +172,9 @@ class CodexAuthService:
                 index, target = futures[future]
                 try:
                     result = future.result()
+                except UsageTimeoutError:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     result = self._usage_fetch_error_result(target, exc)
                 completed[index] = (target, result)
@@ -400,6 +406,8 @@ class CodexAuthService:
     def _fetch_usage_target(self, target: UsageQueryTarget) -> AccountUsageResult:
         try:
             result = fetch_account_usage_snapshot(target)
+        except UsageTimeoutError:
+            raise
         except Exception as exc:  # noqa: BLE001
             return self._usage_fetch_error_result(target, exc)
         if result.error is None:
