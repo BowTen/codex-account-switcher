@@ -463,6 +463,29 @@ def test_fetch_account_usage_snapshot_refreshes_near_expiry_tokens(tmp_path, mon
     assert result.unlimited_credits is False
 
 
+def test_fetch_account_usage_snapshot_reraises_usage_timeout(tmp_path, monkeypatch) -> None:
+    from codex_auth.errors import UsageTimeoutError
+
+    target = UsageQueryTarget(
+        name="work",
+        managed_state="managed",
+        account_id="acct-work",
+        raw=make_snapshot("acct-work"),
+        managed_name="work",
+    )
+
+    monkeypatch.setattr(service_module, "access_token_needs_refresh", lambda access_token: False, raising=False)
+    monkeypatch.setattr(
+        service_module,
+        "fetch_usage",
+        lambda **kwargs: (_ for _ in ()).throw(UsageTimeoutError("usage request timed out")),
+        raising=False,
+    )
+
+    with pytest.raises(UsageTimeoutError, match="usage request timed out"):
+        service_module.fetch_account_usage_snapshot(target)
+
+
 def test_get_usage_account_syncs_live_auth_for_current_account(tmp_path, monkeypatch) -> None:
     service = CodexAuthService(home=tmp_path)
     raw = make_snapshot("acct-work")
@@ -503,20 +526,42 @@ def test_list_usage_accounts_aborts_batch_when_one_account_times_out(tmp_path, m
     from codex_auth.errors import UsageTimeoutError
 
     service = CodexAuthService(home=tmp_path)
-    service.store.save_snapshot("alpha", make_snapshot("acct-alpha"), force=False, mark_active=True)
-    service.store.save_snapshot("beta", make_snapshot("acct-beta"), force=False, mark_active=False)
+    for name, account_id in [("alpha", "acct-alpha"), ("beta", "acct-beta"), ("gamma", "acct-gamma")]:
+        service.store.save_snapshot(name, make_snapshot(account_id), force=False, mark_active=name == "alpha")
 
     monkeypatch.setattr("codex_auth.service.probe_usage_endpoint", lambda: None)
+    monkeypatch.setattr(service_module, "access_token_needs_refresh", lambda access_token: False, raising=False)
 
-    def fake_fetch(target: UsageQueryTarget) -> AccountUsageResult:
-        if target.name == "alpha":
+    release_blocked_fetches = threading.Event()
+
+    def fake_fetch_usage(*, access_token: str, account_id: str):
+        if account_id == "acct-alpha":
             raise UsageTimeoutError("usage request timed out")
-        return make_usage_result(target)
+        if not release_blocked_fetches.wait(timeout=1.0):
+            raise AssertionError(f"{account_id} fetch was not released")
+        return UsageSnapshot(
+            account_id=account_id,
+            plan_type="plus",
+            primary_window=UsageWindow(used_percent=5, limit_window_seconds=18000, reset_at=1775505971),
+            secondary_window=UsageWindow(used_percent=15, limit_window_seconds=604800, reset_at=1776049573),
+            credits=UsageCredits(has_credits=True, unlimited=False, balance="12.50"),
+            raw={"plan_type": "plus"},
+        )
 
-    monkeypatch.setattr("codex_auth.service.fetch_account_usage_snapshot", fake_fetch)
+    monkeypatch.setattr(service_module, "fetch_usage", fake_fetch_usage, raising=False)
 
-    with pytest.raises(UsageTimeoutError, match="usage request timed out"):
-        service.list_usage_accounts()
+    releaser = threading.Timer(0.3, release_blocked_fetches.set)
+    releaser.start()
+
+    start = time.perf_counter()
+    try:
+        with pytest.raises(UsageTimeoutError, match="usage request timed out"):
+            service.list_usage_accounts()
+    finally:
+        release_blocked_fetches.set()
+        releaser.cancel()
+
+    assert time.perf_counter() - start < 0.2
 
 
 def test_list_usage_accounts_continues_for_non_timeout_account_errors(tmp_path, monkeypatch) -> None:

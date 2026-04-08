@@ -65,6 +65,8 @@ def fetch_account_usage_snapshot(target: UsageQueryTarget) -> AccountUsageResult
 
     try:
         usage = fetch_usage(access_token=access_token, account_id=account_id)
+    except UsageTimeoutError:
+        raise
     except Exception as exc:  # noqa: BLE001
         return AccountUsageResult(
             name=target.name,
@@ -163,7 +165,9 @@ class CodexAuthService:
         results: list[AccountUsageResult | None] = [None] * len(targets)
         completed: dict[int, tuple[UsageQueryTarget, AccountUsageResult]] = {}
         next_flush_index = 0
-        with ThreadPoolExecutor(max_workers=USAGE_BATCH_MAX_WORKERS) as executor:
+        executor = ThreadPoolExecutor(max_workers=USAGE_BATCH_MAX_WORKERS)
+        shutdown_wait = True
+        try:
             futures = {
                 executor.submit(self._fetch_usage_target, target): (index, target)
                 for index, target in enumerate(targets)
@@ -173,6 +177,7 @@ class CodexAuthService:
                 try:
                     result = future.result()
                 except UsageTimeoutError:
+                    shutdown_wait = False
                     executor.shutdown(wait=False, cancel_futures=True)
                     raise
                 except Exception as exc:  # noqa: BLE001
@@ -183,6 +188,8 @@ class CodexAuthService:
                     self._persist_usage_refresh(flush_target, flush_result)
                     results[next_flush_index] = flush_result
                     next_flush_index += 1
+        finally:
+            executor.shutdown(wait=shutdown_wait)
         if any(result is None for result in results):
             raise RuntimeError("usage result collection failed")
         return [result for result in results if result is not None]
