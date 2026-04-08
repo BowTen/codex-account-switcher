@@ -486,6 +486,43 @@ def test_fetch_account_usage_snapshot_reraises_usage_timeout(tmp_path, monkeypat
         service_module.fetch_account_usage_snapshot(target)
 
 
+def test_get_usage_account_persists_refreshed_tokens_when_usage_times_out(tmp_path, monkeypatch) -> None:
+    from codex_auth.errors import UsageTimeoutError
+
+    service = CodexAuthService(home=tmp_path)
+    raw = make_snapshot("acct-work")
+    service.store.save_snapshot("work", raw, force=False, mark_active=True)
+    service.store.write_live_auth(raw)
+
+    monkeypatch.setattr(service_module, "access_token_needs_refresh", lambda access_token: True, raising=False)
+    monkeypatch.setattr(
+        service_module,
+        "refresh_chatgpt_credentials",
+        lambda **kwargs: TokenRefreshResult(
+            access_token="access-work-new",
+            refresh_token="refresh-work-new",
+            id_token="id-work-new",
+            account_id="acct-work-new",
+            expires_in=3600,
+            expires_at="2026-04-08T10:00:00Z",
+            raw={"ok": True},
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "fetch_usage",
+        lambda **kwargs: (_ for _ in ()).throw(UsageTimeoutError("usage request timed out")),
+        raising=False,
+    )
+
+    with pytest.raises(UsageTimeoutError, match="usage request timed out"):
+        service.get_usage_account("work")
+
+    assert service.store.load_snapshot("work").raw["tokens"]["account_id"] == "acct-work-new"
+    assert service.store.read_live_auth()["tokens"]["account_id"] == "acct-work-new"
+
+
 def test_get_usage_account_syncs_live_auth_for_current_account(tmp_path, monkeypatch) -> None:
     service = CodexAuthService(home=tmp_path)
     raw = make_snapshot("acct-work")
@@ -562,6 +599,69 @@ def test_list_usage_accounts_aborts_batch_when_one_account_times_out(tmp_path, m
         releaser.cancel()
 
     assert time.perf_counter() - start < 0.2
+
+
+def test_list_usage_accounts_persists_refreshed_timeout_account_before_abort(tmp_path, monkeypatch) -> None:
+    from codex_auth.errors import UsageTimeoutError
+
+    service = CodexAuthService(home=tmp_path)
+    raw = make_snapshot("acct-alpha")
+    service.store.save_snapshot("alpha", raw, force=False, mark_active=True)
+    service.store.save_snapshot("beta", make_snapshot("acct-beta"), force=False, mark_active=False)
+    service.store.write_live_auth(raw)
+
+    monkeypatch.setattr("codex_auth.service.probe_usage_endpoint", lambda: None)
+    monkeypatch.setattr(service_module, "access_token_needs_refresh", lambda access_token: True, raising=False)
+
+    def fake_refresh(*, access_token: str, refresh_token: str, id_token: str, account_id: str):
+        if account_id == "acct-alpha":
+            return TokenRefreshResult(
+                access_token="access-alpha-new",
+                refresh_token="refresh-alpha-new",
+                id_token="id-alpha-new",
+                account_id="acct-alpha-new",
+                expires_in=3600,
+                expires_at="2026-04-08T10:00:00Z",
+                raw={"ok": True},
+            )
+        return TokenRefreshResult(
+            access_token="access-beta-new",
+            refresh_token="refresh-beta-new",
+            id_token="id-beta-new",
+            account_id="acct-beta-new",
+            expires_in=3600,
+            expires_at="2026-04-08T10:00:00Z",
+            raw={"ok": True},
+        )
+
+    monkeypatch.setattr(service_module, "refresh_chatgpt_credentials", fake_refresh, raising=False)
+
+    release_beta = threading.Event()
+
+    def fake_fetch_usage(*, access_token: str, account_id: str):
+        if account_id == "acct-alpha-new":
+            raise UsageTimeoutError("usage request timed out")
+        if not release_beta.wait(timeout=1.0):
+            raise AssertionError("beta fetch was not released")
+        return UsageSnapshot(
+            account_id=account_id,
+            plan_type="plus",
+            primary_window=UsageWindow(used_percent=5, limit_window_seconds=18000, reset_at=1775505971),
+            secondary_window=UsageWindow(used_percent=15, limit_window_seconds=604800, reset_at=1776049573),
+            credits=UsageCredits(has_credits=True, unlimited=False, balance="12.50"),
+            raw={"plan_type": "plus"},
+        )
+
+    monkeypatch.setattr(service_module, "fetch_usage", fake_fetch_usage, raising=False)
+
+    try:
+        with pytest.raises(UsageTimeoutError, match="usage request timed out"):
+            service.list_usage_accounts()
+    finally:
+        release_beta.set()
+
+    assert service.store.load_snapshot("alpha").raw["tokens"]["account_id"] == "acct-alpha-new"
+    assert service.store.read_live_auth()["tokens"]["account_id"] == "acct-alpha-new"
 
 
 def test_list_usage_accounts_continues_for_non_timeout_account_errors(tmp_path, monkeypatch) -> None:

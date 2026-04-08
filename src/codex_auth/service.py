@@ -65,7 +65,9 @@ def fetch_account_usage_snapshot(target: UsageQueryTarget) -> AccountUsageResult
 
     try:
         usage = fetch_usage(access_token=access_token, account_id=account_id)
-    except UsageTimeoutError:
+    except UsageTimeoutError as exc:
+        setattr(exc, "account_id", account_id)
+        setattr(exc, "refreshed_raw", refreshed_raw)
         raise
     except Exception as exc:  # noqa: BLE001
         return AccountUsageResult(
@@ -155,7 +157,11 @@ class CodexAuthService:
     def get_usage_account(self, name: str) -> AccountUsageResult:
         probe_usage_endpoint()
         target = self._build_managed_usage_target(name)
-        result = self._fetch_usage_target(target)
+        try:
+            result = self._fetch_usage_target(target)
+        except UsageTimeoutError as exc:
+            self._persist_usage_refresh(target, self._usage_timeout_result(target, exc))
+            raise
         self._persist_usage_refresh(target, result)
         return result
 
@@ -176,7 +182,8 @@ class CodexAuthService:
                 index, target = futures[future]
                 try:
                     result = future.result()
-                except UsageTimeoutError:
+                except UsageTimeoutError as exc:
+                    self._persist_usage_refresh(target, self._usage_timeout_result(target, exc))
                     shutdown_wait = False
                     executor.shutdown(wait=False, cancel_futures=True)
                     raise
@@ -434,6 +441,23 @@ class CodexAuthService:
             unlimited_credits=None,
             refreshed=False,
             refreshed_raw=None,
+            error=str(exc),
+        )
+
+    def _usage_timeout_result(self, target: UsageQueryTarget, exc: UsageTimeoutError) -> AccountUsageResult:
+        refreshed_raw = getattr(exc, "refreshed_raw", None)
+        return AccountUsageResult(
+            name=target.name,
+            managed_state=target.managed_state,
+            account_id=getattr(exc, "account_id", target.account_id),
+            plan_type=None,
+            primary_window=None,
+            secondary_window=None,
+            credits_balance=None,
+            has_credits=None,
+            unlimited_credits=None,
+            refreshed=refreshed_raw is not None,
+            refreshed_raw=refreshed_raw,
             error=str(exc),
         )
 
