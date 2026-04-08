@@ -99,6 +99,9 @@ class AccountStore:
             raise
         return metadata
 
+    def overwrite_snapshot(self, name: str, raw: dict[str, Any]) -> AccountMetadata:
+        return self.save_snapshot(name, raw, force=True, mark_active=False)
+
     def import_snapshots(
         self,
         accounts: list[TransferAccount],
@@ -258,6 +261,20 @@ class AccountStore:
         if entry["account_id"] != live_snapshot.account_id:
             return None
         return active_name
+
+    def live_matches_snapshot(self, raw: dict[str, Any]) -> bool:
+        current = self.read_live_auth()
+        if current is None:
+            return False
+        try:
+            current_snapshot = parse_snapshot(current)
+            candidate_snapshot = parse_snapshot(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        return (
+            current_snapshot.auth_mode == candidate_snapshot.auth_mode
+            and current_snapshot.account_id == candidate_snapshot.account_id
+        )
 
     def remove_snapshot(self, name: str, *, force_current: bool) -> None:
         registry = self.load_registry()

@@ -112,19 +112,28 @@ class UsageSnapshot:
 
 
 @dataclass(slots=True)
-class UsageTarget:
-    name: str | None
+class UsageQueryTarget:
+    name: str
+    managed_state: str
     account_id: str
-    managed: bool
-    auth_mode: str | None = None
+    raw: dict[str, Any]
+    managed_name: str | None = None
 
 
 @dataclass(slots=True)
-class UsageResult:
-    target: UsageTarget
-    snapshot: UsageSnapshot | None
-    refreshed: bool = False
-    error: str | None = None
+class AccountUsageResult:
+    name: str
+    managed_state: str
+    account_id: str
+    plan_type: str | None
+    primary_window: UsageWindow | None
+    secondary_window: UsageWindow | None
+    credits_balance: str | None
+    has_credits: bool | None
+    unlimited_credits: bool | None
+    refreshed: bool
+    refreshed_raw: dict[str, Any] | None
+    error: str | None
 
 
 @dataclass(slots=True)
@@ -132,7 +141,7 @@ class TokenRefreshResult:
     access_token: str
     refresh_token: str
     id_token: str
-    account_id: str
+    account_id: str | None
     expires_in: int | None = None
     expires_at: str | None = None
     raw: dict[str, Any] | None = None

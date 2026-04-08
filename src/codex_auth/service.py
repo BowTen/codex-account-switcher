@@ -9,10 +9,23 @@ from typing import Mapping
 
 from . import __version__
 from .codex_cli import run_login_status
-from .models import AccountMetadata, ImportPlanItem, ImportResult, TransferAccount, TransferArchive, UseResult
+from .models import (
+    AccountMetadata,
+    AccountUsageResult,
+    ImportPlanItem,
+    ImportResult,
+    TransferAccount,
+    TransferArchive,
+    UsageQueryTarget,
+    UseResult,
+)
 from .store import AccountStore
 from .transfer import decrypt_transfer_archive, encrypt_transfer_archive
 from .validators import parse_snapshot, utc_now_iso, validate_account_name
+
+
+def fetch_account_usage_snapshot(target: UsageQueryTarget) -> AccountUsageResult:
+    raise NotImplementedError("usage fetch helper is not available")
 
 
 class CodexAuthService:
@@ -60,6 +73,20 @@ class CodexAuthService:
 
     def list_accounts(self) -> list[AccountMetadata]:
         return self.store.list_metadata()
+
+    def get_usage_account(self, name: str) -> AccountUsageResult:
+        target = self._build_managed_usage_target(name)
+        result = self._fetch_usage_target(target)
+        self._persist_usage_refresh(target, result)
+        return result
+
+    def list_usage_accounts(self) -> list[AccountUsageResult]:
+        results: list[AccountUsageResult] = []
+        for target in self._list_usage_targets():
+            result = self._fetch_usage_target(target)
+            self._persist_usage_refresh(target, result)
+            results.append(result)
+        return results
 
     def build_export_archive(self, names: list[str]) -> TransferArchive:
         if not names:
@@ -216,3 +243,87 @@ class CodexAuthService:
             return stat.S_IMODE(path.stat().st_mode) == 0o600
         except OSError:
             return False
+
+    def _build_managed_usage_target(self, name: str) -> UsageQueryTarget:
+        name = validate_account_name(name)
+        if name not in self.store.load_registry()["accounts"]:
+            raise ValueError(f"Unknown account: {name}")
+        snapshot = self.store.load_snapshot(name)
+        return UsageQueryTarget(
+            name=name,
+            managed_state="managed",
+            account_id=snapshot.account_id,
+            raw=snapshot.raw,
+            managed_name=name,
+        )
+
+    def _build_live_usage_target(self) -> UsageQueryTarget | None:
+        raw = self.store.read_live_auth()
+        if raw is None:
+            return None
+        try:
+            snapshot = parse_snapshot(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+        registry = self.store.load_registry()
+        for entry in registry.get("accounts", {}).values():
+            if entry.get("auth_mode") == snapshot.auth_mode and entry.get("account_id") == snapshot.account_id:
+                return None
+
+        return UsageQueryTarget(
+            name="live",
+            managed_state="unmanaged",
+            account_id=snapshot.account_id,
+            raw=raw,
+            managed_name=None,
+        )
+
+    def _list_usage_targets(self) -> list[UsageQueryTarget]:
+        targets: list[UsageQueryTarget] = []
+        live_target = self._build_live_usage_target()
+        if live_target is not None:
+            targets.append(live_target)
+
+        for metadata in self.store.list_metadata():
+            snapshot = self.store.load_snapshot(metadata.name)
+            targets.append(
+                UsageQueryTarget(
+                    name=metadata.name,
+                    managed_state="managed",
+                    account_id=snapshot.account_id,
+                    raw=snapshot.raw,
+                    managed_name=metadata.name,
+                )
+            )
+        return targets
+
+    def _fetch_usage_target(self, target: UsageQueryTarget) -> AccountUsageResult:
+        try:
+            result = fetch_account_usage_snapshot(target)
+        except Exception as exc:  # noqa: BLE001
+            return AccountUsageResult(
+                name=target.name,
+                managed_state=target.managed_state,
+                account_id=target.account_id,
+                plan_type=None,
+                primary_window=None,
+                secondary_window=None,
+                credits_balance=None,
+                has_credits=None,
+                unlimited_credits=None,
+                refreshed=False,
+                refreshed_raw=None,
+                error=str(exc),
+            )
+        if result.error is None:
+            return result
+        return result
+
+    def _persist_usage_refresh(self, target: UsageQueryTarget, result: AccountUsageResult) -> None:
+        if result.error is not None or not result.refreshed or result.refreshed_raw is None:
+            return
+        if target.managed_name is not None:
+            self.store.overwrite_snapshot(target.managed_name, result.refreshed_raw)
+        if self.store.live_matches_snapshot(target.raw):
+            self.store.write_live_auth(result.refreshed_raw)

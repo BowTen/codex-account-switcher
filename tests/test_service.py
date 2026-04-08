@@ -5,7 +5,15 @@ from pathlib import Path
 import pytest
 
 from codex_auth import __version__
-from codex_auth.models import AccountMetadata, ImportPlanItem, TransferAccount, TransferArchive
+from codex_auth.models import (
+    AccountMetadata,
+    AccountUsageResult,
+    ImportPlanItem,
+    TransferAccount,
+    TransferArchive,
+    UsageQueryTarget,
+    UsageWindow,
+)
 from codex_auth.service import CodexAuthService
 from codex_auth.validators import parse_snapshot
 
@@ -239,3 +247,108 @@ def test_apply_import_archive_writes_selected_accounts_without_touching_live_aut
     assert service.inspect_account("vacation")["last_verified_at"] == "2024-07-07T00:00:00Z"
     assert service.store.read_live_auth() == live_raw
     assert service.store.current_active_name() == active_before
+
+
+def make_usage_result(
+    target: UsageQueryTarget,
+    *,
+    refreshed: bool = False,
+    refreshed_raw: dict[str, object] | None = None,
+    error: str | None = None,
+) -> AccountUsageResult:
+    return AccountUsageResult(
+        name=target.name,
+        managed_state=target.managed_state,
+        account_id=target.account_id,
+        plan_type="plus",
+        primary_window=UsageWindow(used_percent=7, limit_window_seconds=18000, reset_at=1775505971),
+        secondary_window=UsageWindow(used_percent=30, limit_window_seconds=604800, reset_at=1776049573),
+        credits_balance="0",
+        has_credits=False,
+        unlimited_credits=False,
+        refreshed=refreshed,
+        refreshed_raw=refreshed_raw,
+        error=error,
+    )
+
+
+def test_list_usage_accounts_includes_unmanaged_live_account(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    service.store.write_live_auth(make_snapshot("acct-live"))
+
+    monkeypatch.setattr(
+        "codex_auth.service.fetch_account_usage_snapshot",
+        lambda target: make_usage_result(target),
+    )
+
+    results = service.list_usage_accounts()
+
+    assert [item.name for item in results] == ["live", "work"]
+    assert results[0].managed_state == "unmanaged"
+
+
+def test_list_usage_accounts_deduplicates_matching_live_account(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    raw = make_snapshot("acct-work")
+    service.store.save_snapshot("work", raw, force=False, mark_active=True)
+    service.store.write_live_auth(raw)
+    monkeypatch.setattr(
+        "codex_auth.service.fetch_account_usage_snapshot",
+        lambda target: make_usage_result(target),
+    )
+
+    results = service.list_usage_accounts()
+
+    assert [item.name for item in results] == ["work"]
+
+
+def test_get_usage_account_persists_refreshed_managed_tokens(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+
+    monkeypatch.setattr(
+        "codex_auth.service.fetch_account_usage_snapshot",
+        lambda target: make_usage_result(target, refreshed=True, refreshed_raw=make_snapshot("acct-work-new")),
+    )
+
+    result = service.get_usage_account("work")
+
+    assert result.refreshed is True
+    assert service.store.load_snapshot("work").raw["tokens"]["account_id"] == "acct-work-new"
+
+
+def test_get_usage_account_syncs_live_auth_for_current_account(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    raw = make_snapshot("acct-work")
+    service.store.save_snapshot("work", raw, force=False, mark_active=True)
+    service.store.write_live_auth(raw)
+
+    monkeypatch.setattr(
+        "codex_auth.service.fetch_account_usage_snapshot",
+        lambda target: make_usage_result(target, refreshed=True, refreshed_raw=make_snapshot("acct-work-new")),
+    )
+
+    service.get_usage_account("work")
+
+    assert service.store.read_live_auth()["tokens"]["account_id"] == "acct-work-new"
+
+
+def test_list_usage_accounts_continues_after_per_account_failure(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+    service.store.save_snapshot("travel", make_snapshot("acct-travel"), force=False, mark_active=False)
+    service.store.write_live_auth(make_snapshot("acct-live"))
+
+    def fake_fetch(target: UsageQueryTarget) -> AccountUsageResult:
+        if target.name == "travel":
+            raise ValueError("usage failed")
+        return make_usage_result(target)
+
+    monkeypatch.setattr("codex_auth.service.fetch_account_usage_snapshot", fake_fetch)
+
+    results = service.list_usage_accounts()
+
+    assert [item.name for item in results] == ["live", "travel", "work"]
+    assert results[1].error == "usage failed"
+    assert results[0].error is None
