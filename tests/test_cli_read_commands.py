@@ -6,6 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from codex_auth.cli import main as cli_main
+from codex_auth.models import AccountUsageResult, UsageWindow
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -43,6 +46,42 @@ def make_snapshot(account_id: str) -> dict[str, object]:
             "account_id": account_id,
         },
     }
+
+
+def make_usage_window(*, used_percent: float | int | None, reset_at: int | str | None) -> UsageWindow:
+    return UsageWindow(
+        used_percent=used_percent,
+        limit_window_seconds=18000,
+        reset_at=reset_at,
+        raw={},
+    )
+
+
+def make_usage_result(
+    *,
+    name: str,
+    managed_state: str,
+    account_id: str,
+    primary_window: UsageWindow | None,
+    secondary_window: UsageWindow | None,
+    credits_balance: str | None = None,
+    refreshed: bool = False,
+    error: str | None = None,
+) -> AccountUsageResult:
+    return AccountUsageResult(
+        name=name,
+        managed_state=managed_state,
+        account_id=account_id,
+        plan_type="chatgpt",
+        primary_window=primary_window,
+        secondary_window=secondary_window,
+        credits_balance=credits_balance,
+        has_credits=credits_balance is not None,
+        unlimited_credits=False if credits_balance is not None else None,
+        refreshed=refreshed,
+        refreshed_raw={"tokens": {}} if refreshed else None,
+        error=error,
+    )
 
 
 def test_cli_save_list_current_and_inspect(tmp_path) -> None:
@@ -98,6 +137,104 @@ def test_cli_reports_concise_error_without_traceback(tmp_path) -> None:
     assert result.returncode == 1
     assert "error: Unknown account: missing" in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_cli_usage_renders_mixed_managed_and_unmanaged_results(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    fake_service = type(
+        "FakeUsageService",
+        (),
+        {
+            "list_usage_accounts": lambda self: [
+                make_usage_result(
+                    name="(live)",
+                    managed_state="unmanaged",
+                    account_id="acct-live",
+                    primary_window=make_usage_window(used_percent=25, reset_at=1712224800),
+                    secondary_window=make_usage_window(used_percent=60, reset_at="2026-04-08T18:00:00Z"),
+                    credits_balance="12.5",
+                    refreshed=True,
+                ),
+                make_usage_result(
+                    name="work",
+                    managed_state="managed",
+                    account_id="acct-work",
+                    primary_window=None,
+                    secondary_window=None,
+                ),
+            ],
+            "get_usage_account": lambda self, name: (_ for _ in ()).throw(AssertionError("unexpected get_usage_account")),
+        },
+    )()
+    monkeypatch.setattr("codex_auth.cli.CodexAuthService", lambda: fake_service)
+
+    result = cli_main(["usage"])
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert "account: (live)" in captured.out
+    assert "state: unmanaged" in captured.out
+    assert "5h limit" in captured.out
+    assert "Weekly limit" in captured.out
+    assert "credits: 12.5" in captured.out
+    assert "refreshed" in captured.out
+    assert "account: work" in captured.out
+    assert "state: managed" in captured.out
+    assert "no rate limit data" in captured.out
+    assert captured.err == ""
+
+
+def test_cli_usage_named_account_lookup_errors_are_concise(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    class FakeUsageService:
+        def get_usage_account(self, name: str) -> AccountUsageResult:
+            raise ValueError(f"Unknown account: {name}")
+
+    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
+
+    result = cli_main(["usage", "missing"])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert captured.out == ""
+    assert "error: Unknown account: missing" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_usage_batch_mixed_success_returns_zero_and_keeps_errors_visible(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    class FakeUsageService:
+        def list_usage_accounts(self) -> list[AccountUsageResult]:
+            return [
+                make_usage_result(
+                    name="work",
+                    managed_state="managed",
+                    account_id="acct-work",
+                    primary_window=make_usage_window(used_percent=10, reset_at=1712224800),
+                    secondary_window=make_usage_window(used_percent=20, reset_at=1712228400),
+                ),
+                make_usage_result(
+                    name="travel",
+                    managed_state="managed",
+                    account_id="acct-travel",
+                    primary_window=None,
+                    secondary_window=None,
+                    error="usage request failed: 429 Too Many Requests",
+                ),
+            ]
+
+    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
+
+    result = cli_main(["usage"])
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert "account: work" in captured.out
+    assert "account: travel" in captured.out
+    assert "error: usage request failed: 429 Too Many Requests" in captured.out
+    assert captured.err == ""
 
 
 def test_cli_use_switches_to_a_saved_account(tmp_path) -> None:

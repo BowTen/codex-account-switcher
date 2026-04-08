@@ -13,6 +13,7 @@
 - 保存当前 `~/.codex/auth.json` 为命名快照。
 - 在多个已保存账号之间切换当前登录状态。
 - 列出、查看、重命名、删除本地账号快照。
+- 查看账号使用额度、重置时间和剩余额度。
 - 交互式批量导出/导入（interactive batch export/import）账号快照。
 - 通过 `codex login status` 校验切换结果。
 - 使用 `doctor` 检查本地存储、权限和 Codex 环境状态。
@@ -50,6 +51,8 @@ codex-auth ls
 codex-auth current
 codex-auth inspect work
 codex-auth use work
+codex-auth usage
+codex-auth usage work
 codex-auth rename work primary
 codex-auth rm work --force-current --yes
 codex-auth export

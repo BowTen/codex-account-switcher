@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import sys
 from pathlib import Path
 
@@ -34,6 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("name")
 
     subparsers.add_parser("current", help="Show the current live account summary.")
+
+    usage_parser = subparsers.add_parser("usage", help="Show usage limits for accounts.")
+    usage_parser.add_argument("name", nargs="?")
 
     rename_parser = subparsers.add_parser("rename", help="Rename a saved account.")
     rename_parser.add_argument("old")
@@ -101,6 +105,100 @@ def run_prompt(command_name: str, prompt):
         return _PROMPT_CANCELLED
 
 
+def _format_percentage(value: float | int | None) -> str:
+    if value is None:
+        return "unknown"
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return str(value)
+
+
+def _format_local_time(value: int | str | None) -> str:
+    if value is None:
+        return "unknown"
+
+    dt: datetime | None = None
+    if isinstance(value, int):
+        dt = datetime.fromtimestamp(value, tz=timezone.utc).astimezone()
+    elif isinstance(value, str):
+        if value.isdigit():
+            dt = datetime.fromtimestamp(int(value), tz=timezone.utc).astimezone()
+        else:
+            try:
+                dt = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone()
+            except ValueError:
+                return value
+    if dt is None:
+        return str(value)
+    return dt.strftime("%Y-%m-%d %H:%M %Z")
+
+
+def _format_progress_bar(remaining_percent: float | int | None, width: int = 20) -> str:
+    if remaining_percent is None:
+        return "[????????????????????]"
+    clamped = max(0, min(100, float(remaining_percent)))
+    filled = int(round(clamped / 100 * width))
+    filled = max(0, min(width, filled))
+    return f"[{'#' * filled}{'-' * (width - filled)}]"
+
+
+def _render_usage_window(label: str, window) -> list[str]:
+    if window is None:
+        return [f"{label}: no rate limit data"]
+
+    remaining_percent = window.remaining_percent
+    lines = [
+        f"{label}: {_format_percentage(remaining_percent)}% remaining",
+        f"  progress: {_format_progress_bar(remaining_percent)}",
+        f"  reset (local): {_format_local_time(window.reset_at)}",
+    ]
+    return lines
+
+
+def _render_usage_result(result) -> list[str]:
+    lines = [f"account: {result.name}", f"state: {result.managed_state}", f"account_id: {result.account_id}"]
+    if result.error is not None:
+        lines.append(f"error: {result.error}")
+        return lines
+
+    if result.primary_window is None and result.secondary_window is None:
+        lines.append("no rate limit data")
+    else:
+        lines.extend(_render_usage_window("5h limit", result.primary_window))
+        lines.extend(_render_usage_window("Weekly limit", result.secondary_window))
+
+    if result.credits_balance is not None or result.has_credits is not None or result.unlimited_credits is not None:
+        credits_line = "credits:"
+        credits_details: list[str] = []
+        if result.credits_balance is not None:
+            credits_details.append(str(result.credits_balance))
+        if result.unlimited_credits is True:
+            credits_details.append("unlimited")
+        elif result.has_credits is True:
+            credits_details.append("available")
+        elif result.has_credits is False:
+            credits_details.append("none")
+        if credits_details:
+            credits_line = f"{credits_line} {' '.join(credits_details)}"
+        lines.append(credits_line)
+
+    if result.refreshed:
+        lines.append("refreshed: usage data updated during query")
+    return lines
+
+
+def _render_usage_results(results) -> tuple[list[str], bool]:
+    lines: list[str] = []
+    any_success = False
+    for index, result in enumerate(results):
+        if index > 0:
+            lines.append("")
+        lines.extend(_render_usage_result(result))
+        if result.error is None:
+            any_success = True
+    return lines, any_success
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -134,6 +232,19 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "current":
             print_kv_map(service.current_account())
             return 0
+
+        if args.command == "usage":
+            if args.name:
+                result = service.get_usage_account(args.name)
+                for line in _render_usage_result(result):
+                    print(line)
+                return 0 if result.error is None else 1
+
+            results = service.list_usage_accounts()
+            lines, any_success = _render_usage_results(results)
+            for line in lines:
+                print(line)
+            return 0 if any_success else 1
 
         if args.command == "rename":
             service.rename_account(args.old, args.new, force=args.force)
