@@ -164,7 +164,7 @@ def test_fetch_usage_raises_concise_value_error_for_http_failure(monkeypatch: py
         def close(self) -> None:
             return None
 
-    def fake_urlopen(request):
+    def fake_urlopen(request, timeout=None):
         raise usage_api.urllib.error.HTTPError(
             request.full_url,
             403,
@@ -180,6 +180,62 @@ def test_fetch_usage_raises_concise_value_error_for_http_failure(monkeypatch: py
             access_token="token",
             account_id="acct-123",
         )
+
+
+def test_probe_usage_endpoint_treats_http_error_as_reachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    from codex_auth import usage_api
+
+    class Response:
+        def __init__(self, status: int, body: bytes) -> None:
+            self.status = status
+            self._body = body
+
+        def read(self) -> bytes:
+            return self._body
+
+        def close(self) -> None:
+            return None
+
+    def fake_urlopen(request, timeout=None):
+        raise usage_api.urllib.error.HTTPError(
+            request.full_url,
+            401,
+            "Unauthorized",
+            hdrs=None,
+            fp=Response(401, b'{"error":"unauthorized"}'),
+        )
+
+    monkeypatch.setattr(usage_api.urllib.request, "urlopen", fake_urlopen)
+
+    usage_api.probe_usage_endpoint()
+
+
+def test_probe_usage_endpoint_raises_concise_network_error_for_unreachable_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from codex_auth import usage_api
+    from codex_auth.errors import UsageNetworkError
+
+    def fake_urlopen(request, timeout=None):
+        raise usage_api.urllib.error.URLError("network is unreachable")
+
+    monkeypatch.setattr(usage_api.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(UsageNetworkError, match="usage endpoint unreachable: network is unreachable"):
+        usage_api.probe_usage_endpoint()
+
+
+def test_fetch_usage_raises_usage_timeout_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from codex_auth import usage_api
+    from codex_auth.errors import UsageTimeoutError
+
+    def fake_urlopen(request, timeout=None):
+        raise usage_api.urllib.error.URLError(TimeoutError("timed out"))
+
+    monkeypatch.setattr(usage_api.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(UsageTimeoutError, match="usage request timed out"):
+        usage_api.fetch_usage(access_token="token", account_id="acct-123")
 
 
 def test_refresh_request_uses_chatgpt_oauth_endpoint_and_client_id(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -231,7 +287,7 @@ def test_usage_request_sends_expected_headers(monkeypatch: pytest.MonkeyPatch) -
         def read(self) -> bytes:
             return b'{"plan_type":"chatgpt_plus","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000,"reset_at":1712570400}},"credits":{"has_credits":true,"unlimited":false,"balance":"0"}}'
 
-    def fake_urlopen(request):
+    def fake_urlopen(request, timeout=None):
         captured["url"] = request.full_url
         captured["headers"] = dict(request.header_items())
         return Response()
