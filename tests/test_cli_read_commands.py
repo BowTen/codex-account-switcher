@@ -203,6 +203,62 @@ def test_cli_usage_renders_mixed_managed_and_unmanaged_results(tmp_path, monkeyp
     assert captured.err == ""
 
 
+def test_cli_usage_prefers_unicode_progress_bars_when_supported(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("codex_auth.cli._unicode_usage_bars_supported", lambda: True)
+
+    class FakeUsageService:
+        def list_usage_accounts(self) -> list[AccountUsageResult]:
+            return [
+                make_usage_result(
+                    name="work",
+                    managed_state="managed",
+                    account_id="acct-work",
+                    primary_window=make_usage_window(used_percent=25, reset_at=1712224800),
+                    secondary_window=None,
+                ),
+            ]
+
+    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
+
+    result = cli_main(["usage"])
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert "progress: [█████" in captured.out
+    assert "#" not in captured.out
+    assert captured.err == ""
+
+
+def test_cli_usage_falls_back_to_ascii_progress_bars_when_unicode_is_unsupported(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("codex_auth.cli._unicode_usage_bars_supported", lambda: False)
+
+    class FakeUsageService:
+        def list_usage_accounts(self) -> list[AccountUsageResult]:
+            return [
+                make_usage_result(
+                    name="work",
+                    managed_state="managed",
+                    account_id="acct-work",
+                    primary_window=make_usage_window(used_percent=25, reset_at=1712224800),
+                    secondary_window=None,
+                ),
+            ]
+
+    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
+
+    result = cli_main(["usage"])
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert "progress: [###############-----]" in captured.out
+    assert "█" not in captured.out
+    assert captured.err == ""
+
+
 def test_cli_usage_named_account_lookup_errors_are_concise(tmp_path) -> None:
     patch_dir = tmp_path / "patches"
     patch_dir.mkdir()

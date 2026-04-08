@@ -133,13 +133,33 @@ def _format_local_time(value: int | str | None) -> str:
     return dt.strftime("%Y-%m-%d %H:%M %Z")
 
 
-def _format_progress_bar(remaining_percent: float | int | None, width: int = 20) -> str:
+def _unicode_usage_bars_supported() -> bool:
+    encoding = getattr(sys.stdout, "encoding", None)
+    if not encoding:
+        return False
+    try:
+        "█░".encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        return False
+    return True
+
+
+def _format_progress_bar(
+    remaining_percent: float | int | None,
+    width: int = 20,
+    *,
+    use_unicode: bool | None = None,
+) -> str:
     if remaining_percent is None:
         return "[????????????????????]"
+    if use_unicode is None:
+        use_unicode = _unicode_usage_bars_supported()
     clamped = max(0, min(100, float(remaining_percent)))
     filled = int(round(clamped / 100 * width))
     filled = max(0, min(width, filled))
-    return f"[{'#' * filled}{'-' * (width - filled)}]"
+    filled_char = "█" if use_unicode else "#"
+    empty_char = "░" if use_unicode else "-"
+    return f"[{filled_char * filled}{empty_char * (width - filled)}]"
 
 
 def _render_usage_window(label: str, window) -> list[str]:
