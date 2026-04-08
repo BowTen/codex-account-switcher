@@ -7,14 +7,14 @@
 
 ## 2. Service and Storage Integration
 
-- [ ] 2.1 Add store helpers for overwriting refreshed managed snapshots and safely syncing refreshed live auth state.
-- [ ] 2.2 Add service methods for `usage <name>` and bare `usage`, including managed/live target selection and duplicate suppression.
-- [ ] 2.3 Persist refreshed credentials only for the queried managed snapshot and matching live auth file.
-- [ ] 2.4 Add service tests for named queries, unmanaged live inclusion, duplicate suppression, refresh persistence, and per-account failure continuation.
+- [x] 2.1 Add store helpers for overwriting refreshed managed snapshots and safely syncing refreshed live auth state.
+- [x] 2.2 Add service methods for `usage <name>` and bare `usage`, including managed/live target selection and duplicate suppression.
+- [x] 2.3 Persist refreshed credentials only for the queried managed snapshot and matching live auth file.
+- [x] 2.4 Add service tests for named queries, unmanaged live inclusion, duplicate suppression, refresh persistence, and per-account failure continuation.
 
 ## 3. CLI Rendering and Verification
 
-- [ ] 3.1 Add the `usage` CLI command with an optional account name argument.
-- [ ] 3.2 Render human-friendly 5-hour and weekly quota blocks with remaining percentages, reset times, credits information, and refresh notices.
-- [ ] 3.3 Add CLI regression tests for successful output, named-account failures, and mixed-success batch results.
-- [ ] 3.4 Update the README command examples and run focused plus full `uv run pytest` verification before marking the change complete.
+- [x] 3.1 Add the `usage` CLI command with an optional account name argument.
+- [x] 3.2 Render human-friendly 5-hour and weekly quota blocks with remaining percentages, reset times, credits information, and refresh notices.
+- [x] 3.3 Add CLI regression tests for successful output, named-account failures, and mixed-success batch results.
+- [x] 3.4 Update the README command examples and run focused plus full `uv run pytest` verification before marking the change complete.
