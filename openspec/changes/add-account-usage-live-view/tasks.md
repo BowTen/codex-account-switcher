@@ -14,7 +14,7 @@
 ## 3. Fallback and Verification
 
 - [x] 3.1 Keep redirected and non-TTY bare `usage` output on a stable plain-text path.
-- [ ] 3.2 Update `README.md` only if the live-view versus plain-text behavior needs operator-facing clarification.
+- [x] 3.2 Update `README.md` only if the live-view versus plain-text behavior needs operator-facing clarification.
 - [x] 3.3 Run `uv run pytest tests/test_service.py tests/test_cli_read_commands.py -q`.
-- [ ] 3.4 Run `uv run pytest -q`.
-- [ ] 3.5 Mark this OpenSpec task list complete after implementation and verification.
+- [x] 3.4 Run `uv run pytest -q`.
+- [x] 3.5 Mark this OpenSpec task list complete after implementation and verification.
