@@ -1,8 +1,8 @@
 ## 1. Progress Event Infrastructure
 
-- [ ] 1.1 Add usage batch progress-event models in `src/codex_auth/models.py` for phase, running, queued, completed, and aborted states.
-- [ ] 1.2 Add a streaming batch usage API in `src/codex_auth/service.py` that emits progress events while preserving bounded concurrency.
-- [ ] 1.3 Add `tests/test_service.py` coverage for progress-event emission and timeout-abort event behavior.
+- [x] 1.1 Add usage batch progress-event models in `src/codex_auth/models.py` for phase, running, queued, completed, and aborted states.
+- [x] 1.2 Add a streaming batch usage API in `src/codex_auth/service.py` that emits progress events while preserving bounded concurrency.
+- [x] 1.3 Add `tests/test_service.py` coverage for progress-event emission and timeout-abort event behavior.
 
 ## 2. Interactive Live View
 

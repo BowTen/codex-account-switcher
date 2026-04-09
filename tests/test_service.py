@@ -20,6 +20,11 @@ from codex_auth.models import (
     TransferArchive,
     UsageQueryTarget,
     UsageCredits,
+    UsageBatchAbortedEvent,
+    UsageBatchCompletedEvent,
+    UsageBatchPhaseEvent,
+    UsageBatchQueuedEvent,
+    UsageBatchRunningEvent,
     UsageWindow,
     UsageSnapshot,
 )
@@ -423,6 +428,62 @@ def test_list_usage_accounts_runs_preflight_before_fetching_targets(tmp_path, mo
     service.list_usage_accounts()
 
     assert events == ["probe", "work"]
+
+
+def test_stream_usage_accounts_emits_progress_events(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("alpha", make_snapshot("acct-alpha"), force=False, mark_active=True)
+    service.store.save_snapshot("beta", make_snapshot("acct-beta"), force=False, mark_active=False)
+
+    monkeypatch.setattr("codex_auth.service.probe_usage_endpoint", lambda: None)
+    monkeypatch.setattr(
+        "codex_auth.service.fetch_account_usage_snapshot",
+        lambda target: make_usage_result(target),
+    )
+
+    events = list(service.stream_usage_accounts())
+
+    assert isinstance(events[0], UsageBatchPhaseEvent)
+    assert events[0].phase == "prechecking network"
+    assert any(isinstance(event, UsageBatchQueuedEvent) and event.queued_names for event in events)
+    assert any(isinstance(event, UsageBatchRunningEvent) and event.running_names for event in events)
+
+    completed_events = [event for event in events if isinstance(event, UsageBatchCompletedEvent)]
+    assert {event.result.name for event in completed_events} == {"alpha", "beta"}
+
+    assert isinstance(events[-1], UsageBatchPhaseEvent)
+    assert events[-1].phase == "completed"
+
+
+def test_stream_usage_accounts_emits_timeout_abort_event(tmp_path, monkeypatch) -> None:
+    from codex_auth.errors import UsageTimeoutError
+
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("alpha", make_snapshot("acct-alpha"), force=False, mark_active=True)
+    service.store.save_snapshot("beta", make_snapshot("acct-beta"), force=False, mark_active=False)
+
+    monkeypatch.setattr("codex_auth.service.probe_usage_endpoint", lambda: None)
+
+    release_beta = threading.Event()
+
+    def fake_fetch(target: UsageQueryTarget) -> AccountUsageResult:
+        if target.name == "alpha":
+            raise UsageTimeoutError("usage request timed out")
+        if not release_beta.wait(timeout=1.0):
+            raise AssertionError("beta fetch was not released")
+        return make_usage_result(target)
+
+    monkeypatch.setattr("codex_auth.service.fetch_account_usage_snapshot", fake_fetch)
+
+    try:
+        events = list(service.stream_usage_accounts())
+    finally:
+        release_beta.set()
+
+    assert isinstance(events[-1], UsageBatchAbortedEvent)
+    assert events[-1].phase == "aborted (timeout)"
+    assert events[-1].error == "usage request timed out"
+    assert events[-1].timed_out is True
 
 
 def test_fetch_account_usage_snapshot_refreshes_near_expiry_tokens(tmp_path, monkeypatch) -> None:
