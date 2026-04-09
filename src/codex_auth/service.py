@@ -210,7 +210,17 @@ class CodexAuthService:
             queued_names=list(queued_names),
             running_names=list(running_names),
         )
-        probe_usage_endpoint()
+        try:
+            probe_usage_endpoint()
+        except UsageTimeoutError as exc:
+            yield UsageBatchAbortedEvent(
+                phase="aborted (timeout)",
+                queued_names=list(queued_names),
+                running_names=list(running_names),
+                error=str(exc),
+                timed_out_name=None,
+            )
+            return
         yield UsageBatchPhaseEvent(
             phase="querying",
             queued_names=list(queued_names),
@@ -297,6 +307,7 @@ class CodexAuthService:
                         queued_names=list(queued_names),
                         running_names=list(running_names),
                         error=str(item.timeout),
+                        timed_out_name=item.target.name,
                     )
                     return
                 assert item.result is not None

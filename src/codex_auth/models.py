@@ -171,6 +171,7 @@ class UsageBatchAbortedEvent:
     running_names: list[str]
     queued_names: list[str]
     error: str
+    timed_out_name: str | None
     timed_out: bool = True
 
 

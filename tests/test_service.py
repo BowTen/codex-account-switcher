@@ -484,6 +484,29 @@ def test_stream_usage_accounts_emits_timeout_abort_event(tmp_path, monkeypatch) 
     assert events[-1].phase == "aborted (timeout)"
     assert events[-1].error == "usage request timed out"
     assert events[-1].timed_out is True
+    assert events[-1].timed_out_name == "alpha"
+
+
+def test_stream_usage_accounts_emits_abort_event_when_preflight_times_out(tmp_path, monkeypatch) -> None:
+    from codex_auth.errors import UsageTimeoutError
+
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("alpha", make_snapshot("acct-alpha"), force=False, mark_active=True)
+
+    monkeypatch.setattr(
+        "codex_auth.service.probe_usage_endpoint",
+        lambda: (_ for _ in ()).throw(UsageTimeoutError("usage request timed out")),
+    )
+
+    events = list(service.stream_usage_accounts())
+
+    assert isinstance(events[0], UsageBatchPhaseEvent)
+    assert events[0].phase == "prechecking network"
+    assert isinstance(events[-1], UsageBatchAbortedEvent)
+    assert events[-1].phase == "aborted (timeout)"
+    assert events[-1].error == "usage request timed out"
+    assert events[-1].timed_out is True
+    assert events[-1].timed_out_name is None
 
 
 def test_fetch_account_usage_snapshot_refreshes_near_expiry_tokens(tmp_path, monkeypatch) -> None:
