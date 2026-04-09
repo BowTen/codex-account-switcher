@@ -343,6 +343,60 @@ def test_cli_usage_named_account_lookup_errors_are_concise(tmp_path) -> None:
     assert "Traceback" not in result.stderr
 
 
+def test_cli_usage_named_account_lookup_network_error_is_concise(tmp_path) -> None:
+    patch_dir = tmp_path / "patches"
+    patch_dir.mkdir()
+    (patch_dir / "sitecustomize.py").write_text(
+        "from codex_auth import cli\n"
+        "from codex_auth.errors import UsageNetworkError\n"
+        "\n"
+        "class FakeUsageService:\n"
+        "    def get_usage_account(self, name):\n"
+        "        raise UsageNetworkError('usage endpoint unreachable: network is unreachable')\n"
+        "\n"
+        "cli.CodexAuthService = FakeUsageService\n"
+    )
+
+    result = run_cli_with_pythonpath(
+        tmp_path,
+        "usage",
+        "missing",
+        pythonpath_entries=[patch_dir, ROOT / "src"],
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == "error: usage endpoint unreachable: network is unreachable\n"
+    assert "Traceback" not in result.stderr
+
+
+def test_cli_usage_named_account_lookup_timeout_error_is_concise(tmp_path) -> None:
+    patch_dir = tmp_path / "patches"
+    patch_dir.mkdir()
+    (patch_dir / "sitecustomize.py").write_text(
+        "from codex_auth import cli\n"
+        "from codex_auth.errors import UsageTimeoutError\n"
+        "\n"
+        "class FakeUsageService:\n"
+        "    def get_usage_account(self, name):\n"
+        "        raise UsageTimeoutError('usage request timed out')\n"
+        "\n"
+        "cli.CodexAuthService = FakeUsageService\n"
+    )
+
+    result = run_cli_with_pythonpath(
+        tmp_path,
+        "usage",
+        "missing",
+        pythonpath_entries=[patch_dir, ROOT / "src"],
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == "error: usage request timed out\n"
+    assert "Traceback" not in result.stderr
+
+
 def test_cli_usage_batch_mixed_success_returns_zero_and_keeps_errors_visible(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
 
