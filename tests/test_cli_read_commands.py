@@ -570,8 +570,11 @@ def test_cli_usage_tty_renders_live_status_and_incremental_sorted_results(tmp_pa
 
     assert result == 0
     output = stdout.getvalue()
-    assert "\x1b[2J\x1b[H" in output
-    frames = [frame for frame in output.split("\x1b[2J\x1b[H") if frame]
+    assert "\x1b[?1049h" in output
+    assert "\x1b[?1049l" in output
+    live_output, final_output = output.split("\x1b[?1049l", 1)
+    assert "\x1b[2J\x1b[H" in live_output
+    frames = [frame for frame in live_output.split("\x1b[2J\x1b[H") if frame]
     assert any("account: bravo" in frame and "account: alpha" not in frame for frame in frames)
     assert any("account: bravo" in frame and "account: alpha" in frame for frame in frames)
     final_frame = frames[-1]
@@ -579,9 +582,13 @@ def test_cli_usage_tty_renders_live_status_and_incremental_sorted_results(tmp_pa
     assert "running: -" in final_frame
     assert "queued: -" in final_frame
 
-    bravo_index = final_frame.index("account: bravo")
-    alpha_index = final_frame.index("account: alpha")
-    gamma_index = final_frame.index("account: gamma")
+    assert "phase: completed" not in final_output
+    assert "running: -" not in final_output
+    assert "queued: -" not in final_output
+
+    bravo_index = final_output.index("account: bravo")
+    alpha_index = final_output.index("account: alpha")
+    gamma_index = final_output.index("account: gamma")
     assert bravo_index < alpha_index < gamma_index
     assert stderr.getvalue() == ""
 
@@ -618,11 +625,17 @@ def test_cli_usage_tty_timeout_abort_surfaces_terminal_state_and_exits_non_zero(
 
     assert result == 1
     output = stdout.getvalue()
-    assert "\x1b[2J\x1b[H" in output
-    final_frame = [frame for frame in output.split("\x1b[2J\x1b[H") if frame][-1]
+    assert "\x1b[?1049h" in output
+    assert "\x1b[?1049l" in output
+    live_output, final_output = output.split("\x1b[?1049l", 1)
+    assert "\x1b[2J\x1b[H" in live_output
+    final_frame = [frame for frame in live_output.split("\x1b[2J\x1b[H") if frame][-1]
     assert "phase: aborted (timeout)" in final_frame
     assert "timed out: alpha" in final_frame
     assert "error: usage request timed out" in final_frame
+    assert "phase: aborted (timeout)" in final_output
+    assert "timed out: alpha" in final_output
+    assert "error: usage request timed out" in final_output
     assert stderr.getvalue() == ""
 
 

@@ -14,6 +14,10 @@ from .service import CodexAuthService
 
 CANCELLED_EXIT_CODE = 3
 _PROMPT_CANCELLED = object()
+_ALT_SCREEN_ENTER = "\x1b[?1049h"
+_ALT_SCREEN_EXIT = "\x1b[?1049l"
+_HIDE_CURSOR = "\x1b[?25l"
+_SHOW_CURSOR = "\x1b[?25h"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -319,6 +323,24 @@ def _draw_live_usage(lines: list[str]) -> None:
     sys.stdout.flush()
 
 
+def _enter_live_usage_screen() -> None:
+    sys.stdout.write(f"{_ALT_SCREEN_ENTER}{_HIDE_CURSOR}")
+    sys.stdout.flush()
+
+
+def _exit_live_usage_screen() -> None:
+    sys.stdout.write(f"{_SHOW_CURSOR}{_ALT_SCREEN_EXIT}")
+    sys.stdout.flush()
+
+
+def _write_usage_lines(lines: list[str]) -> None:
+    if not lines:
+        return
+    sys.stdout.write("\n".join(lines))
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
 def _run_live_usage(service: CodexAuthService) -> int:
     completed_results: list = []
     phase = "starting"
@@ -327,17 +349,36 @@ def _run_live_usage(service: CodexAuthService) -> int:
     aborted_error: str | None = None
     timed_out_name: str | None = None
 
-    for event in service.stream_usage_accounts():
-        phase = event.phase
-        running_names = list(event.running_names)
-        queued_names = list(event.queued_names)
-        if isinstance(event, UsageBatchCompletedEvent):
-            completed_results.append(event.result)
-        if isinstance(event, UsageBatchAbortedEvent):
-            aborted_error = event.error
-            timed_out_name = event.timed_out_name
+    _enter_live_usage_screen()
+    try:
+        for event in service.stream_usage_accounts():
+            phase = event.phase
+            running_names = list(event.running_names)
+            queued_names = list(event.queued_names)
+            if isinstance(event, UsageBatchCompletedEvent):
+                completed_results.append(event.result)
+            if isinstance(event, UsageBatchAbortedEvent):
+                aborted_error = event.error
+                timed_out_name = event.timed_out_name
 
-        _draw_live_usage(
+            _draw_live_usage(
+                _render_usage_live_lines(
+                    completed_results=completed_results,
+                    phase=phase,
+                    running_names=running_names,
+                    queued_names=queued_names,
+                    error=aborted_error,
+                    timed_out_name=timed_out_name,
+                )
+            )
+
+            if aborted_error is not None:
+                break
+    finally:
+        _exit_live_usage_screen()
+
+    if aborted_error is not None:
+        _write_usage_lines(
             _render_usage_live_lines(
                 completed_results=completed_results,
                 phase=phase,
@@ -347,11 +388,11 @@ def _run_live_usage(service: CodexAuthService) -> int:
                 timed_out_name=timed_out_name,
             )
         )
+        return 1
 
-        if aborted_error is not None:
-            return 1
-
-    return 0 if any(result.error is None for result in completed_results) else 1
+    lines, any_success = _render_usage_results(completed_results)
+    _write_usage_lines(lines)
+    return 0 if any_success else 1
 
 
 def main(argv: list[str] | None = None) -> int:
