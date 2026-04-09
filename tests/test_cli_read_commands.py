@@ -8,7 +8,15 @@ import pytest
 
 from codex_auth import cli as cli_module
 from codex_auth.cli import main as cli_main
-from codex_auth.models import AccountUsageResult, UsageWindow
+from codex_auth.models import (
+    AccountUsageResult,
+    UsageBatchAbortedEvent,
+    UsageBatchCompletedEvent,
+    UsageBatchPhaseEvent,
+    UsageBatchQueuedEvent,
+    UsageBatchRunningEvent,
+    UsageWindow,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -123,6 +131,15 @@ class FakeTextStream:
 
     def getvalue(self) -> str:
         return "".join(self._chunks)
+
+
+class FakeTTYTextStream(FakeTextStream):
+    def __init__(self, encoding: str | None, *, tty: bool) -> None:
+        super().__init__(encoding)
+        self._tty = tty
+
+    def isatty(self) -> bool:
+        return self._tty
 
 
 def test_cli_save_list_current_and_inspect(tmp_path) -> None:
@@ -343,6 +360,60 @@ def test_cli_usage_named_account_lookup_errors_are_concise(tmp_path) -> None:
     assert "Traceback" not in result.stderr
 
 
+def test_cli_usage_named_account_lookup_network_error_is_concise(tmp_path) -> None:
+    patch_dir = tmp_path / "patches"
+    patch_dir.mkdir()
+    (patch_dir / "sitecustomize.py").write_text(
+        "from codex_auth import cli\n"
+        "from codex_auth.errors import UsageNetworkError\n"
+        "\n"
+        "class FakeUsageService:\n"
+        "    def get_usage_account(self, name):\n"
+        "        raise UsageNetworkError('usage endpoint unreachable: network is unreachable')\n"
+        "\n"
+        "cli.CodexAuthService = FakeUsageService\n"
+    )
+
+    result = run_cli_with_pythonpath(
+        tmp_path,
+        "usage",
+        "missing",
+        pythonpath_entries=[patch_dir, ROOT / "src"],
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == "error: usage endpoint unreachable: network is unreachable\n"
+    assert "Traceback" not in result.stderr
+
+
+def test_cli_usage_named_account_lookup_timeout_error_is_concise(tmp_path) -> None:
+    patch_dir = tmp_path / "patches"
+    patch_dir.mkdir()
+    (patch_dir / "sitecustomize.py").write_text(
+        "from codex_auth import cli\n"
+        "from codex_auth.errors import UsageTimeoutError\n"
+        "\n"
+        "class FakeUsageService:\n"
+        "    def get_usage_account(self, name):\n"
+        "        raise UsageTimeoutError('usage request timed out')\n"
+        "\n"
+        "cli.CodexAuthService = FakeUsageService\n"
+    )
+
+    result = run_cli_with_pythonpath(
+        tmp_path,
+        "usage",
+        "missing",
+        pythonpath_entries=[patch_dir, ROOT / "src"],
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == "error: usage request timed out\n"
+    assert "Traceback" not in result.stderr
+
+
 def test_cli_usage_batch_mixed_success_returns_zero_and_keeps_errors_visible(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
 
@@ -376,6 +447,258 @@ def test_cli_usage_batch_mixed_success_returns_zero_and_keeps_errors_visible(tmp
     assert "account: travel" in captured.out
     assert "error: usage request failed: 429 Too Many Requests" in captured.out
     assert captured.err == ""
+
+
+def test_cli_usage_reports_preflight_network_failure(tmp_path, monkeypatch, capsys) -> None:
+    from codex_auth.errors import UsageNetworkError
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    class FakeUsageService:
+        def list_usage_accounts(self):
+            raise UsageNetworkError("usage endpoint unreachable: network is unreachable")
+
+    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
+
+    result = cli_main(["usage"])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert captured.out == ""
+    assert captured.err == "error: usage endpoint unreachable: network is unreachable\n"
+    assert "Traceback" not in captured.err
+
+
+def test_cli_usage_reports_timeout_failure(tmp_path, monkeypatch, capsys) -> None:
+    from codex_auth.errors import UsageTimeoutError
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    class FakeUsageService:
+        def list_usage_accounts(self):
+            raise UsageTimeoutError("usage request timed out")
+
+    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
+
+    result = cli_main(["usage"])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert captured.out == ""
+    assert captured.err == "error: usage request timed out\n"
+    assert "Traceback" not in captured.err
+
+
+def test_cli_usage_tty_renders_live_status_and_incremental_sorted_results(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("TERM", "xterm-256color")
+    stdout = FakeTTYTextStream("utf-8", tty=True)
+    stderr = FakeTTYTextStream("utf-8", tty=True)
+    monkeypatch.setattr(cli_module.sys, "stdout", stdout)
+    monkeypatch.setattr(cli_module.sys, "stderr", stderr)
+
+    errored = make_usage_result(
+        name="bravo",
+        managed_state="managed",
+        account_id="acct-bravo",
+        primary_window=None,
+        secondary_window=None,
+        error="usage request failed: 429 Too Many Requests",
+    )
+    alpha = make_usage_result(
+        name="alpha",
+        managed_state="managed",
+        account_id="acct-alpha",
+        primary_window=make_usage_window(used_percent=70, reset_at=1712224800),
+        secondary_window=make_usage_window(used_percent=80, reset_at=1712228400),
+    )
+    gamma = make_usage_result(
+        name="gamma",
+        managed_state="managed",
+        account_id="acct-gamma",
+        primary_window=make_usage_window(used_percent=20, reset_at=1712224800),
+        secondary_window=make_usage_window(used_percent=10, reset_at=1712228400),
+    )
+
+    class FakeUsageService:
+        def stream_usage_accounts(self):
+            yield UsageBatchPhaseEvent(
+                phase="prechecking network",
+                running_names=[],
+                queued_names=["bravo", "alpha", "gamma"],
+            )
+            yield UsageBatchRunningEvent(
+                phase="querying",
+                running_names=["bravo"],
+                queued_names=["alpha", "gamma"],
+            )
+            yield UsageBatchQueuedEvent(
+                phase="querying",
+                running_names=["bravo"],
+                queued_names=["alpha", "gamma"],
+            )
+            yield UsageBatchCompletedEvent(
+                phase="querying",
+                running_names=["alpha"],
+                queued_names=["gamma"],
+                result=errored,
+            )
+            yield UsageBatchCompletedEvent(
+                phase="querying",
+                running_names=["gamma"],
+                queued_names=[],
+                result=gamma,
+            )
+            yield UsageBatchCompletedEvent(
+                phase="querying",
+                running_names=[],
+                queued_names=[],
+                result=alpha,
+            )
+            yield UsageBatchPhaseEvent(
+                phase="completed",
+                running_names=[],
+                queued_names=[],
+            )
+
+        def list_usage_accounts(self):  # pragma: no cover - should not be used in this test
+            raise AssertionError("unexpected list_usage_accounts in tty live mode")
+
+    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
+
+    result = cli_main(["usage"])
+
+    assert result == 0
+    output = stdout.getvalue()
+    assert "\x1b[2J\x1b[H" in output
+    frames = [frame for frame in output.split("\x1b[2J\x1b[H") if frame]
+    assert any("account: bravo" in frame and "account: alpha" not in frame for frame in frames)
+    assert any("account: bravo" in frame and "account: alpha" in frame for frame in frames)
+    final_frame = frames[-1]
+    assert "phase: completed" in final_frame
+    assert "running: -" in final_frame
+    assert "queued: -" in final_frame
+
+    bravo_index = final_frame.index("account: bravo")
+    alpha_index = final_frame.index("account: alpha")
+    gamma_index = final_frame.index("account: gamma")
+    assert bravo_index < alpha_index < gamma_index
+    assert stderr.getvalue() == ""
+
+
+def test_cli_usage_tty_timeout_abort_surfaces_terminal_state_and_exits_non_zero(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("TERM", "xterm-256color")
+    stdout = FakeTTYTextStream("utf-8", tty=True)
+    stderr = FakeTTYTextStream("utf-8", tty=True)
+    monkeypatch.setattr(cli_module.sys, "stdout", stdout)
+    monkeypatch.setattr(cli_module.sys, "stderr", stderr)
+
+    class FakeUsageService:
+        def stream_usage_accounts(self):
+            yield UsageBatchPhaseEvent(
+                phase="prechecking network",
+                running_names=[],
+                queued_names=["alpha", "beta"],
+            )
+            yield UsageBatchAbortedEvent(
+                phase="aborted (timeout)",
+                running_names=["beta"],
+                queued_names=[],
+                error="usage request timed out",
+                timed_out_name="alpha",
+            )
+
+        def list_usage_accounts(self):  # pragma: no cover - should not be used in this test
+            raise AssertionError("unexpected list_usage_accounts in tty live mode")
+
+    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
+
+    result = cli_main(["usage"])
+
+    assert result == 1
+    output = stdout.getvalue()
+    assert "\x1b[2J\x1b[H" in output
+    final_frame = [frame for frame in output.split("\x1b[2J\x1b[H") if frame][-1]
+    assert "phase: aborted (timeout)" in final_frame
+    assert "timed out: alpha" in final_frame
+    assert "error: usage request timed out" in final_frame
+    assert stderr.getvalue() == ""
+
+
+def test_cli_usage_non_tty_keeps_plain_text_stable_without_live_redraw(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    stdout = FakeTTYTextStream("utf-8", tty=False)
+    stderr = FakeTTYTextStream("utf-8", tty=False)
+    monkeypatch.setattr(cli_module.sys, "stdout", stdout)
+    monkeypatch.setattr(cli_module.sys, "stderr", stderr)
+
+    class FakeUsageService:
+        def list_usage_accounts(self):
+            return [
+                make_usage_result(
+                    name="work",
+                    managed_state="managed",
+                    account_id="acct-work",
+                    primary_window=make_usage_window(used_percent=25, reset_at=1712224800),
+                    secondary_window=make_usage_window(used_percent=60, reset_at=1712228400),
+                ),
+            ]
+
+        def stream_usage_accounts(self):  # pragma: no cover - should not be used in this test
+            raise AssertionError("unexpected stream_usage_accounts in non-tty mode")
+
+    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
+
+    result = cli_main(["usage"])
+
+    assert result == 0
+    output = stdout.getvalue()
+    assert "\x1b[2J\x1b[H" not in output
+    assert "account: work" in output
+    assert "5h limit: 75% remaining" in output
+    assert "Weekly limit: 40% remaining" in output
+    assert stderr.getvalue() == ""
+
+
+def test_cli_usage_tty_with_dumb_terminal_falls_back_to_plain_text(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("TERM", "dumb")
+    stdout = FakeTTYTextStream("utf-8", tty=True)
+    stderr = FakeTTYTextStream("utf-8", tty=True)
+    monkeypatch.setattr(cli_module.sys, "stdout", stdout)
+    monkeypatch.setattr(cli_module.sys, "stderr", stderr)
+
+    calls = {"list": 0, "stream": 0}
+
+    class FakeUsageService:
+        def list_usage_accounts(self):
+            calls["list"] += 1
+            return [
+                make_usage_result(
+                    name="work",
+                    managed_state="managed",
+                    account_id="acct-work",
+                    primary_window=make_usage_window(used_percent=25, reset_at=1712224800),
+                    secondary_window=make_usage_window(used_percent=60, reset_at=1712228400),
+                ),
+            ]
+
+        def stream_usage_accounts(self):  # pragma: no cover - should not be used in this test
+            calls["stream"] += 1
+            raise AssertionError("unexpected stream_usage_accounts for TERM=dumb")
+
+    monkeypatch.setattr("codex_auth.cli.CodexAuthService", FakeUsageService)
+
+    result = cli_main(["usage"])
+
+    assert result == 0
+    assert calls["list"] == 1
+    assert calls["stream"] == 0
+    output = stdout.getvalue()
+    assert "\x1b[2J\x1b[H" not in output
+    assert "account: work" in output
+    assert stderr.getvalue() == ""
 
 
 def test_cli_use_switches_to_a_saved_account(tmp_path) -> None:

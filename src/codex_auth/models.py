@@ -137,6 +137,54 @@ class AccountUsageResult:
 
 
 @dataclass(slots=True)
+class UsageBatchPhaseEvent:
+    phase: str
+    running_names: list[str]
+    queued_names: list[str]
+
+
+@dataclass(slots=True)
+class UsageBatchRunningEvent:
+    phase: str
+    running_names: list[str]
+    queued_names: list[str]
+
+
+@dataclass(slots=True)
+class UsageBatchQueuedEvent:
+    phase: str
+    running_names: list[str]
+    queued_names: list[str]
+
+
+@dataclass(slots=True)
+class UsageBatchCompletedEvent:
+    phase: str
+    running_names: list[str]
+    queued_names: list[str]
+    result: AccountUsageResult
+
+
+@dataclass(slots=True)
+class UsageBatchAbortedEvent:
+    phase: str
+    running_names: list[str]
+    queued_names: list[str]
+    error: str
+    timed_out_name: str | None
+    timed_out: bool = True
+
+
+UsageBatchEvent = (
+    UsageBatchPhaseEvent
+    | UsageBatchRunningEvent
+    | UsageBatchQueuedEvent
+    | UsageBatchCompletedEvent
+    | UsageBatchAbortedEvent
+)
+
+
+@dataclass(slots=True)
 class TokenRefreshResult:
     access_token: str
     refresh_token: str

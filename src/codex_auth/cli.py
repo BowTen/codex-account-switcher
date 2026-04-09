@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import os
 import sys
 from pathlib import Path
 
 from . import prompts
 from .errors import TransferError
+from .models import UsageBatchAbortedEvent, UsageBatchCompletedEvent
 from .service import CodexAuthService
 
 
@@ -207,16 +209,149 @@ def _render_usage_result(result) -> list[str]:
     return lines
 
 
+def _usage_sort_metric(value: float | int | None) -> float:
+    if value is None:
+        return float("inf")
+    return float(value)
+
+
+def _usage_success_sort_key(result) -> tuple[float, float, str]:
+    primary_remaining = result.primary_window.remaining_percent if result.primary_window is not None else None
+    secondary_remaining = result.secondary_window.remaining_percent if result.secondary_window is not None else None
+    return (
+        _usage_sort_metric(primary_remaining),
+        _usage_sort_metric(secondary_remaining),
+        result.name,
+    )
+
+
+def _order_usage_results(results) -> list:
+    errored = [result for result in results if result.error is not None]
+    successful = sorted((result for result in results if result.error is None), key=_usage_success_sort_key)
+    return [*errored, *successful]
+
+
 def _render_usage_results(results) -> tuple[list[str], bool]:
     lines: list[str] = []
     any_success = False
-    for index, result in enumerate(results):
+    for index, result in enumerate(_order_usage_results(results)):
         if index > 0:
             lines.append("")
         lines.extend(_render_usage_result(result))
         if result.error is None:
             any_success = True
     return lines, any_success
+
+
+def _render_usage_status_area(
+    *,
+    phase: str,
+    running_names: list[str],
+    queued_names: list[str],
+    error: str | None = None,
+    timed_out_name: str | None = None,
+) -> list[str]:
+    lines = [
+        f"phase: {phase}",
+        f"running: {', '.join(running_names) if running_names else '-'}",
+        f"queued: {', '.join(queued_names) if queued_names else '-'}",
+    ]
+    if timed_out_name is not None:
+        lines.append(f"timed out: {timed_out_name}")
+    if error is not None:
+        lines.append(f"error: {error}")
+    return lines
+
+
+def _render_usage_live_lines(
+    *,
+    completed_results,
+    phase: str,
+    running_names: list[str],
+    queued_names: list[str],
+    error: str | None = None,
+    timed_out_name: str | None = None,
+) -> list[str]:
+    lines: list[str] = []
+    ordered_results = _order_usage_results(completed_results)
+    for index, result in enumerate(ordered_results):
+        if index > 0:
+            lines.append("")
+        lines.extend(_render_usage_result(result))
+    if lines:
+        lines.append("")
+    lines.extend(
+        _render_usage_status_area(
+            phase=phase,
+            running_names=running_names,
+            queued_names=queued_names,
+            error=error,
+            timed_out_name=timed_out_name,
+        )
+    )
+    return lines
+
+
+def _stdout_is_tty() -> bool:
+    isatty = getattr(sys.stdout, "isatty", None)
+    if not callable(isatty):
+        return False
+    try:
+        return bool(isatty())
+    except OSError:
+        return False
+
+
+def _terminal_supports_ansi() -> bool:
+    term = os.environ.get("TERM", "").strip().lower()
+    return term not in {"", "dumb", "unknown"}
+
+
+def _live_usage_enabled() -> bool:
+    return _stdout_is_tty() and _terminal_supports_ansi()
+
+
+def _draw_live_usage(lines: list[str]) -> None:
+    sys.stdout.write("\x1b[2J\x1b[H")
+    if lines:
+        sys.stdout.write("\n".join(lines))
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+def _run_live_usage(service: CodexAuthService) -> int:
+    completed_results: list = []
+    phase = "starting"
+    running_names: list[str] = []
+    queued_names: list[str] = []
+    aborted_error: str | None = None
+    timed_out_name: str | None = None
+
+    for event in service.stream_usage_accounts():
+        phase = event.phase
+        running_names = list(event.running_names)
+        queued_names = list(event.queued_names)
+        if isinstance(event, UsageBatchCompletedEvent):
+            completed_results.append(event.result)
+        if isinstance(event, UsageBatchAbortedEvent):
+            aborted_error = event.error
+            timed_out_name = event.timed_out_name
+
+        _draw_live_usage(
+            _render_usage_live_lines(
+                completed_results=completed_results,
+                phase=phase,
+                running_names=running_names,
+                queued_names=queued_names,
+                error=aborted_error,
+                timed_out_name=timed_out_name,
+            )
+        )
+
+        if aborted_error is not None:
+            return 1
+
+    return 0 if any(result.error is None for result in completed_results) else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -261,6 +396,9 @@ def main(argv: list[str] | None = None) -> int:
                 for line in _render_usage_result(result):
                     print(line)
                 return 0 if result.error is None else 1
+
+            if _live_usage_enabled():
+                return _run_live_usage(service)
 
             results = service.list_usage_accounts()
             lines, any_success = _render_usage_results(results)

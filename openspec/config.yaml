@@ -11,6 +11,7 @@ context: |
     - Prefer small, reviewable OpenSpec changes.
     - Use OpenSpec for new features, behavior changes, and meaningful bug fixes.
     - Doc-only or tooling-only changes may archive with --skip-specs when no requirement changes are involved.
+    - For shipped user-visible features, update README feature descriptions and version files before archiving the change, then commit those release-wrap-up updates after the archive step.
     - Keep secrets and real auth snapshots out of the repository.
 
 rules:

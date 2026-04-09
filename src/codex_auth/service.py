@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import stat
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Iterator, Mapping
 
 from . import __version__
 from .codex_cli import run_login_status
+from .errors import UsageTimeoutError
 from .models import (
     AccountMetadata,
     AccountUsageResult,
@@ -17,17 +20,49 @@ from .models import (
     ImportResult,
     TransferAccount,
     TransferArchive,
+    UsageBatchAbortedEvent,
+    UsageBatchCompletedEvent,
+    UsageBatchEvent,
+    UsageBatchPhaseEvent,
+    UsageBatchQueuedEvent,
+    UsageBatchRunningEvent,
     UsageQueryTarget,
     UseResult,
 )
 from .store import AccountStore
 from .token_refresh import access_token_needs_refresh, refresh_chatgpt_credentials
-from .usage_api import fetch_usage
+from .usage_api import fetch_usage, probe_usage_endpoint
 from .transfer import decrypt_transfer_archive, encrypt_transfer_archive
 from .validators import parse_snapshot, utc_now_iso, validate_account_name
 
 LIVE_USAGE_DISPLAY_NAME = "(live)"
 USAGE_BATCH_MAX_WORKERS = 4
+
+
+@dataclass(slots=True)
+class _UsageTimeoutContext:
+    account_id: str
+    refreshed_raw: dict[str, object] | None
+
+
+class _UsageFetchTimeout(UsageTimeoutError):
+    def __init__(self, message: str, *, context: _UsageTimeoutContext) -> None:
+        super().__init__(message)
+        self.context = context
+
+
+@dataclass(slots=True)
+class _UsageBatchWorkItem:
+    index: int
+    target: UsageQueryTarget
+
+
+@dataclass(slots=True)
+class _UsageBatchResult:
+    index: int
+    target: UsageQueryTarget
+    result: AccountUsageResult | None = None
+    timeout: UsageTimeoutError | None = None
 
 
 def fetch_account_usage_snapshot(target: UsageQueryTarget) -> AccountUsageResult:
@@ -64,6 +99,11 @@ def fetch_account_usage_snapshot(target: UsageQueryTarget) -> AccountUsageResult
 
     try:
         usage = fetch_usage(access_token=access_token, account_id=account_id)
+    except UsageTimeoutError as exc:
+        raise _UsageFetchTimeout(
+            str(exc),
+            context=_UsageTimeoutContext(account_id=account_id, refreshed_raw=refreshed_raw),
+        ) from None
     except Exception as exc:  # noqa: BLE001
         return AccountUsageResult(
             name=target.name,
@@ -150,33 +190,215 @@ class CodexAuthService:
         return self.store.list_metadata()
 
     def get_usage_account(self, name: str) -> AccountUsageResult:
+        probe_usage_endpoint()
         target = self._build_managed_usage_target(name)
-        result = self._fetch_usage_target(target)
+        try:
+            result = self._fetch_usage_target(target)
+        except UsageTimeoutError as exc:
+            self._persist_usage_refresh(target, self._usage_timeout_result(target, exc))
+            raise
         self._persist_usage_refresh(target, result)
         return result
 
+    def stream_usage_accounts(self) -> Iterator[UsageBatchEvent]:
+        targets = self._list_usage_targets()
+        queued_names = [target.name for target in targets]
+        running_names: list[str] = []
+
+        yield UsageBatchPhaseEvent(
+            phase="prechecking network",
+            queued_names=list(queued_names),
+            running_names=list(running_names),
+        )
+        try:
+            probe_usage_endpoint()
+        except UsageTimeoutError as exc:
+            yield UsageBatchAbortedEvent(
+                phase="aborted (timeout)",
+                queued_names=list(queued_names),
+                running_names=list(running_names),
+                error=str(exc),
+                timed_out_name=None,
+            )
+            return
+        yield UsageBatchPhaseEvent(
+            phase="querying",
+            queued_names=list(queued_names),
+            running_names=list(running_names),
+        )
+
+        worker_count = min(USAGE_BATCH_MAX_WORKERS, len(targets))
+        if worker_count == 0:
+            yield UsageBatchPhaseEvent(
+                phase="completed",
+                queued_names=[],
+                running_names=[],
+            )
+            return
+
+        work_queue: queue.Queue[_UsageBatchWorkItem | None] = queue.Queue()
+        result_queue: queue.Queue[_UsageBatchResult] = queue.Queue()
+        stop_event = threading.Event()
+
+        def worker() -> None:
+            while True:
+                item = work_queue.get()
+                if item is None:
+                    return
+                if stop_event.is_set():
+                    continue
+                try:
+                    result = self._fetch_usage_target(item.target)
+                except UsageTimeoutError as exc:
+                    stop_event.set()
+                    result_queue.put(_UsageBatchResult(index=item.index, target=item.target, timeout=exc))
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    result = self._usage_fetch_error_result(item.target, exc)
+                result_queue.put(_UsageBatchResult(index=item.index, target=item.target, result=result))
+
+        for worker_index in range(worker_count):
+            thread = threading.Thread(
+                target=worker,
+                name=f"usage-stream-worker-{worker_index}",
+                daemon=True,
+            )
+            thread.start()
+
+        next_index_to_start = 0
+
+        def start_next_target() -> bool:
+            nonlocal next_index_to_start
+            if next_index_to_start >= len(targets):
+                return False
+            item = _UsageBatchWorkItem(index=next_index_to_start, target=targets[next_index_to_start])
+            next_index_to_start += 1
+            work_queue.put(item)
+            running_names.append(item.target.name)
+            queued_names.remove(item.target.name)
+            return True
+
+        for _ in range(worker_count):
+            if not start_next_target():
+                break
+            yield UsageBatchRunningEvent(
+                phase="querying",
+                queued_names=list(queued_names),
+                running_names=list(running_names),
+            )
+            yield UsageBatchQueuedEvent(
+                phase="querying",
+                queued_names=list(queued_names),
+                running_names=list(running_names),
+            )
+
+        processed = 0
+        try:
+            while processed < len(targets):
+                item = result_queue.get()
+                if item.target.name in running_names:
+                    running_names.remove(item.target.name)
+                if item.timeout is not None:
+                    timeout_result = self._usage_timeout_result(item.target, item.timeout)
+                    self._persist_usage_refresh(item.target, timeout_result)
+                    stop_event.set()
+                    yield UsageBatchAbortedEvent(
+                        phase="aborted (timeout)",
+                        queued_names=list(queued_names),
+                        running_names=list(running_names),
+                        error=str(item.timeout),
+                        timed_out_name=item.target.name,
+                    )
+                    return
+                assert item.result is not None
+                processed += 1
+                self._persist_usage_refresh(item.target, item.result)
+                yield UsageBatchCompletedEvent(
+                    phase="querying",
+                    queued_names=list(queued_names),
+                    running_names=list(running_names),
+                    result=item.result,
+                )
+                if start_next_target():
+                    yield UsageBatchRunningEvent(
+                        phase="querying",
+                        queued_names=list(queued_names),
+                        running_names=list(running_names),
+                    )
+                    yield UsageBatchQueuedEvent(
+                        phase="querying",
+                        queued_names=list(queued_names),
+                        running_names=list(running_names),
+                    )
+        finally:
+            stop_event.set()
+            for _ in range(worker_count):
+                work_queue.put(None)
+
+        yield UsageBatchPhaseEvent(
+            phase="completed",
+            queued_names=list(queued_names),
+            running_names=list(running_names),
+        )
+
     def list_usage_accounts(self) -> list[AccountUsageResult]:
+        probe_usage_endpoint()
         targets = self._list_usage_targets()
         results: list[AccountUsageResult | None] = [None] * len(targets)
         completed: dict[int, tuple[UsageQueryTarget, AccountUsageResult]] = {}
         next_flush_index = 0
-        with ThreadPoolExecutor(max_workers=USAGE_BATCH_MAX_WORKERS) as executor:
-            futures = {
-                executor.submit(self._fetch_usage_target, target): (index, target)
-                for index, target in enumerate(targets)
-            }
-            for future in as_completed(futures):
-                index, target = futures[future]
+        worker_count = min(USAGE_BATCH_MAX_WORKERS, len(targets))
+        if worker_count == 0:
+            return []
+
+        work_queue: queue.Queue[_UsageBatchWorkItem | None] = queue.Queue()
+        result_queue: queue.Queue[_UsageBatchResult] = queue.Queue()
+        stop_event = threading.Event()
+
+        for index, target in enumerate(targets):
+            work_queue.put(_UsageBatchWorkItem(index=index, target=target))
+        for _ in range(worker_count):
+            work_queue.put(None)
+
+        def worker() -> None:
+            while True:
+                item = work_queue.get()
+                if item is None:
+                    return
+                if stop_event.is_set():
+                    continue
                 try:
-                    result = future.result()
+                    result = self._fetch_usage_target(item.target)
+                except UsageTimeoutError as exc:
+                    stop_event.set()
+                    result_queue.put(_UsageBatchResult(index=item.index, target=item.target, timeout=exc))
+                    return
                 except Exception as exc:  # noqa: BLE001
-                    result = self._usage_fetch_error_result(target, exc)
-                completed[index] = (target, result)
-                while next_flush_index in completed:
-                    flush_target, flush_result = completed.pop(next_flush_index)
-                    self._persist_usage_refresh(flush_target, flush_result)
-                    results[next_flush_index] = flush_result
-                    next_flush_index += 1
+                    result = self._usage_fetch_error_result(item.target, exc)
+                result_queue.put(_UsageBatchResult(index=item.index, target=item.target, result=result))
+
+        for worker_index in range(worker_count):
+            thread = threading.Thread(
+                target=worker,
+                name=f"usage-batch-worker-{worker_index}",
+                daemon=True,
+            )
+            thread.start()
+
+        processed = 0
+        while processed < len(targets):
+            item = result_queue.get()
+            if item.timeout is not None:
+                self._persist_usage_refresh(item.target, self._usage_timeout_result(item.target, item.timeout))
+                raise item.timeout
+            assert item.result is not None
+            processed += 1
+            completed[item.index] = (item.target, item.result)
+            while next_flush_index in completed:
+                flush_target, flush_result = completed.pop(next_flush_index)
+                self._persist_usage_refresh(flush_target, flush_result)
+                results[next_flush_index] = flush_result
+                next_flush_index += 1
         if any(result is None for result in results):
             raise RuntimeError("usage result collection failed")
         return [result for result in results if result is not None]
@@ -400,6 +622,8 @@ class CodexAuthService:
     def _fetch_usage_target(self, target: UsageQueryTarget) -> AccountUsageResult:
         try:
             result = fetch_account_usage_snapshot(target)
+        except UsageTimeoutError:
+            raise
         except Exception as exc:  # noqa: BLE001
             return self._usage_fetch_error_result(target, exc)
         if result.error is None:
@@ -419,6 +643,28 @@ class CodexAuthService:
             unlimited_credits=None,
             refreshed=False,
             refreshed_raw=None,
+            error=str(exc),
+        )
+
+    def _usage_timeout_result(self, target: UsageQueryTarget, exc: UsageTimeoutError) -> AccountUsageResult:
+        if isinstance(exc, _UsageFetchTimeout):
+            account_id = exc.context.account_id
+            refreshed_raw = exc.context.refreshed_raw
+        else:
+            account_id = target.account_id
+            refreshed_raw = None
+        return AccountUsageResult(
+            name=target.name,
+            managed_state=target.managed_state,
+            account_id=account_id,
+            plan_type=None,
+            primary_window=None,
+            secondary_window=None,
+            credits_balance=None,
+            has_credits=None,
+            unlimited_credits=None,
+            refreshed=refreshed_raw is not None,
+            refreshed_raw=refreshed_raw,
             error=str(exc),
         )
 

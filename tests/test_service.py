@@ -1,6 +1,9 @@
 import os
 import stat
+import subprocess
+import sys
 import threading
+import textwrap
 import time
 from pathlib import Path
 
@@ -17,6 +20,11 @@ from codex_auth.models import (
     TransferArchive,
     UsageQueryTarget,
     UsageCredits,
+    UsageBatchAbortedEvent,
+    UsageBatchCompletedEvent,
+    UsageBatchPhaseEvent,
+    UsageBatchQueuedEvent,
+    UsageBatchRunningEvent,
     UsageWindow,
     UsageSnapshot,
 )
@@ -52,6 +60,11 @@ def make_snapshot_with_access_token(account_id: str, access_token: str) -> dict[
     snapshot = make_snapshot(account_id)
     snapshot["tokens"]["access_token"] = access_token
     return snapshot
+
+
+@pytest.fixture(autouse=True)
+def stub_usage_preflight(monkeypatch) -> None:
+    monkeypatch.setattr(service_module, "probe_usage_endpoint", lambda: None, raising=False)
 
 
 def test_use_account_switches_live_auth_and_marks_verified(tmp_path) -> None:
@@ -383,6 +396,119 @@ def test_get_usage_account_queries_only_named_managed_account(tmp_path, monkeypa
     assert queried == ["work"]
 
 
+def test_get_usage_account_runs_preflight_before_fetching_named_account(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+
+    events: list[str] = []
+
+    monkeypatch.setattr("codex_auth.service.probe_usage_endpoint", lambda: events.append("probe"))
+    monkeypatch.setattr(
+        "codex_auth.service.fetch_account_usage_snapshot",
+        lambda target: events.append(target.name) or make_usage_result(target),
+    )
+
+    service.get_usage_account("work")
+
+    assert events == ["probe", "work"]
+
+
+def test_list_usage_accounts_runs_preflight_before_fetching_targets(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("work", make_snapshot("acct-work"), force=False, mark_active=True)
+
+    events: list[str] = []
+
+    monkeypatch.setattr("codex_auth.service.probe_usage_endpoint", lambda: events.append("probe"))
+    monkeypatch.setattr(
+        "codex_auth.service.fetch_account_usage_snapshot",
+        lambda target: events.append(target.name) or make_usage_result(target),
+    )
+
+    service.list_usage_accounts()
+
+    assert events == ["probe", "work"]
+
+
+def test_stream_usage_accounts_emits_progress_events(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("alpha", make_snapshot("acct-alpha"), force=False, mark_active=True)
+    service.store.save_snapshot("beta", make_snapshot("acct-beta"), force=False, mark_active=False)
+
+    monkeypatch.setattr("codex_auth.service.probe_usage_endpoint", lambda: None)
+    monkeypatch.setattr(
+        "codex_auth.service.fetch_account_usage_snapshot",
+        lambda target: make_usage_result(target),
+    )
+
+    events = list(service.stream_usage_accounts())
+
+    assert isinstance(events[0], UsageBatchPhaseEvent)
+    assert events[0].phase == "prechecking network"
+    assert any(isinstance(event, UsageBatchQueuedEvent) and event.queued_names for event in events)
+    assert any(isinstance(event, UsageBatchRunningEvent) and event.running_names for event in events)
+
+    completed_events = [event for event in events if isinstance(event, UsageBatchCompletedEvent)]
+    assert {event.result.name for event in completed_events} == {"alpha", "beta"}
+
+    assert isinstance(events[-1], UsageBatchPhaseEvent)
+    assert events[-1].phase == "completed"
+
+
+def test_stream_usage_accounts_emits_timeout_abort_event(tmp_path, monkeypatch) -> None:
+    from codex_auth.errors import UsageTimeoutError
+
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("alpha", make_snapshot("acct-alpha"), force=False, mark_active=True)
+    service.store.save_snapshot("beta", make_snapshot("acct-beta"), force=False, mark_active=False)
+
+    monkeypatch.setattr("codex_auth.service.probe_usage_endpoint", lambda: None)
+
+    release_beta = threading.Event()
+
+    def fake_fetch(target: UsageQueryTarget) -> AccountUsageResult:
+        if target.name == "alpha":
+            raise UsageTimeoutError("usage request timed out")
+        if not release_beta.wait(timeout=1.0):
+            raise AssertionError("beta fetch was not released")
+        return make_usage_result(target)
+
+    monkeypatch.setattr("codex_auth.service.fetch_account_usage_snapshot", fake_fetch)
+
+    try:
+        events = list(service.stream_usage_accounts())
+    finally:
+        release_beta.set()
+
+    assert isinstance(events[-1], UsageBatchAbortedEvent)
+    assert events[-1].phase == "aborted (timeout)"
+    assert events[-1].error == "usage request timed out"
+    assert events[-1].timed_out is True
+    assert events[-1].timed_out_name == "alpha"
+
+
+def test_stream_usage_accounts_emits_abort_event_when_preflight_times_out(tmp_path, monkeypatch) -> None:
+    from codex_auth.errors import UsageTimeoutError
+
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("alpha", make_snapshot("acct-alpha"), force=False, mark_active=True)
+
+    monkeypatch.setattr(
+        "codex_auth.service.probe_usage_endpoint",
+        lambda: (_ for _ in ()).throw(UsageTimeoutError("usage request timed out")),
+    )
+
+    events = list(service.stream_usage_accounts())
+
+    assert isinstance(events[0], UsageBatchPhaseEvent)
+    assert events[0].phase == "prechecking network"
+    assert isinstance(events[-1], UsageBatchAbortedEvent)
+    assert events[-1].phase == "aborted (timeout)"
+    assert events[-1].error == "usage request timed out"
+    assert events[-1].timed_out is True
+    assert events[-1].timed_out_name is None
+
+
 def test_fetch_account_usage_snapshot_refreshes_near_expiry_tokens(tmp_path, monkeypatch) -> None:
     raw = make_snapshot("acct-work")
     target = UsageQueryTarget(
@@ -441,6 +567,66 @@ def test_fetch_account_usage_snapshot_refreshes_near_expiry_tokens(tmp_path, mon
     assert result.unlimited_credits is False
 
 
+def test_fetch_account_usage_snapshot_reraises_usage_timeout(tmp_path, monkeypatch) -> None:
+    from codex_auth.errors import UsageTimeoutError
+
+    target = UsageQueryTarget(
+        name="work",
+        managed_state="managed",
+        account_id="acct-work",
+        raw=make_snapshot("acct-work"),
+        managed_name="work",
+    )
+
+    monkeypatch.setattr(service_module, "access_token_needs_refresh", lambda access_token: False, raising=False)
+    monkeypatch.setattr(
+        service_module,
+        "fetch_usage",
+        lambda **kwargs: (_ for _ in ()).throw(UsageTimeoutError("usage request timed out")),
+        raising=False,
+    )
+
+    with pytest.raises(UsageTimeoutError, match="usage request timed out"):
+        service_module.fetch_account_usage_snapshot(target)
+
+
+def test_get_usage_account_persists_refreshed_tokens_when_usage_times_out(tmp_path, monkeypatch) -> None:
+    from codex_auth.errors import UsageTimeoutError
+
+    service = CodexAuthService(home=tmp_path)
+    raw = make_snapshot("acct-work")
+    service.store.save_snapshot("work", raw, force=False, mark_active=True)
+    service.store.write_live_auth(raw)
+
+    monkeypatch.setattr(service_module, "access_token_needs_refresh", lambda access_token: True, raising=False)
+    monkeypatch.setattr(
+        service_module,
+        "refresh_chatgpt_credentials",
+        lambda **kwargs: TokenRefreshResult(
+            access_token="access-work-new",
+            refresh_token="refresh-work-new",
+            id_token="id-work-new",
+            account_id="acct-work-new",
+            expires_in=3600,
+            expires_at="2026-04-08T10:00:00Z",
+            raw={"ok": True},
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "fetch_usage",
+        lambda **kwargs: (_ for _ in ()).throw(UsageTimeoutError("usage request timed out")),
+        raising=False,
+    )
+
+    with pytest.raises(UsageTimeoutError, match="usage request timed out"):
+        service.get_usage_account("work")
+
+    assert service.store.load_snapshot("work").raw["tokens"]["account_id"] == "acct-work-new"
+    assert service.store.read_live_auth()["tokens"]["account_id"] == "acct-work-new"
+
+
 def test_get_usage_account_syncs_live_auth_for_current_account(tmp_path, monkeypatch) -> None:
     service = CodexAuthService(home=tmp_path)
     raw = make_snapshot("acct-work")
@@ -475,6 +661,228 @@ def test_list_usage_accounts_continues_after_per_account_failure(tmp_path, monke
     assert [item.name for item in results] == ["(live)", "travel", "work"]
     assert results[1].error == "usage failed"
     assert results[0].error is None
+
+
+def test_list_usage_accounts_aborts_batch_when_one_account_times_out(tmp_path, monkeypatch) -> None:
+    from codex_auth.errors import UsageTimeoutError
+
+    service = CodexAuthService(home=tmp_path)
+    for name, account_id in [("alpha", "acct-alpha"), ("beta", "acct-beta"), ("gamma", "acct-gamma")]:
+        service.store.save_snapshot(name, make_snapshot(account_id), force=False, mark_active=name == "alpha")
+
+    monkeypatch.setattr("codex_auth.service.probe_usage_endpoint", lambda: None)
+    monkeypatch.setattr(service_module, "access_token_needs_refresh", lambda access_token: False, raising=False)
+
+    release_blocked_fetches = threading.Event()
+
+    def fake_fetch_usage(*, access_token: str, account_id: str):
+        if account_id == "acct-alpha":
+            raise UsageTimeoutError("usage request timed out")
+        if not release_blocked_fetches.wait(timeout=1.0):
+            raise AssertionError(f"{account_id} fetch was not released")
+        return UsageSnapshot(
+            account_id=account_id,
+            plan_type="plus",
+            primary_window=UsageWindow(used_percent=5, limit_window_seconds=18000, reset_at=1775505971),
+            secondary_window=UsageWindow(used_percent=15, limit_window_seconds=604800, reset_at=1776049573),
+            credits=UsageCredits(has_credits=True, unlimited=False, balance="12.50"),
+            raw={"plan_type": "plus"},
+        )
+
+    monkeypatch.setattr(service_module, "fetch_usage", fake_fetch_usage, raising=False)
+
+    releaser = threading.Timer(0.3, release_blocked_fetches.set)
+    releaser.start()
+
+    start = time.perf_counter()
+    try:
+        with pytest.raises(UsageTimeoutError, match="usage request timed out"):
+            service.list_usage_accounts()
+    finally:
+        release_blocked_fetches.set()
+        releaser.cancel()
+
+    assert time.perf_counter() - start < 0.2
+
+
+def test_list_usage_accounts_timeout_allows_subprocess_to_exit_promptly(tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    script_path = tmp_path / "timeout_batch_exit.py"
+    home_path = tmp_path / "home"
+    script_path.write_text(
+        textwrap.dedent(
+            f"""
+            import time
+            import threading
+            from pathlib import Path
+
+            from codex_auth import service as service_module
+            from codex_auth.errors import UsageTimeoutError
+            from codex_auth.models import AccountUsageResult
+            from codex_auth.service import CodexAuthService
+
+            def make_snapshot(account_id: str) -> dict[str, object]:
+                return {{
+                    "auth_mode": "chatgpt",
+                    "last_refresh": "2026-04-04T10:00:00Z",
+                    "tokens": {{
+                        "access_token": f"access-{{account_id}}",
+                        "refresh_token": f"refresh-{{account_id}}",
+                        "id_token": f"id-{{account_id}}",
+                        "account_id": account_id,
+                    }},
+                }}
+
+            def make_usage_result(target) -> AccountUsageResult:
+                return AccountUsageResult(
+                    name=target.name,
+                    managed_state=target.managed_state,
+                    account_id=target.account_id,
+                    plan_type="plus",
+                    primary_window=None,
+                    secondary_window=None,
+                    credits_balance=None,
+                    has_credits=None,
+                    unlimited_credits=None,
+                    refreshed=False,
+                    refreshed_raw=None,
+                    error=None,
+                )
+
+            service = CodexAuthService(home=Path({str(home_path)!r}))
+            service.store.save_snapshot("alpha", make_snapshot("acct-alpha"), force=False, mark_active=True)
+            service.store.save_snapshot("beta", make_snapshot("acct-beta"), force=False, mark_active=False)
+
+            service_module.probe_usage_endpoint = lambda: None
+
+            beta_started = threading.Event()
+
+            def fake_fetch(target):
+                if target.name == "beta":
+                    beta_started.set()
+                    time.sleep(1.0)
+                    return make_usage_result(target)
+                if not beta_started.wait(timeout=1.0):
+                    raise AssertionError("beta worker did not start")
+                raise UsageTimeoutError("usage request timed out")
+
+            service_module.fetch_account_usage_snapshot = fake_fetch
+
+            start = time.perf_counter()
+            try:
+                service.list_usage_accounts()
+            except UsageTimeoutError:
+                print(f"elapsed_in_process={{time.perf_counter() - start:.3f}}")
+                raise SystemExit(0)
+
+            raise SystemExit(2)
+            """
+        )
+    )
+
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(repo_root / "src") + os.pathsep + os.environ.get("PYTHONPATH", ""),
+    }
+
+    start = time.perf_counter()
+    completed = subprocess.run(
+        [sys.executable, str(script_path)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+        timeout=3.0,
+    )
+    elapsed = time.perf_counter() - start
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    assert "elapsed_in_process=" in completed.stdout
+    assert elapsed < 0.5
+
+
+def test_list_usage_accounts_persists_refreshed_timeout_account_before_abort(tmp_path, monkeypatch) -> None:
+    from codex_auth.errors import UsageTimeoutError
+
+    service = CodexAuthService(home=tmp_path)
+    raw = make_snapshot("acct-alpha")
+    service.store.save_snapshot("alpha", raw, force=False, mark_active=True)
+    service.store.save_snapshot("beta", make_snapshot("acct-beta"), force=False, mark_active=False)
+    service.store.write_live_auth(raw)
+
+    monkeypatch.setattr("codex_auth.service.probe_usage_endpoint", lambda: None)
+    monkeypatch.setattr(service_module, "access_token_needs_refresh", lambda access_token: True, raising=False)
+
+    def fake_refresh(*, access_token: str, refresh_token: str, id_token: str, account_id: str):
+        if account_id == "acct-alpha":
+            return TokenRefreshResult(
+                access_token="access-alpha-new",
+                refresh_token="refresh-alpha-new",
+                id_token="id-alpha-new",
+                account_id="acct-alpha-new",
+                expires_in=3600,
+                expires_at="2026-04-08T10:00:00Z",
+                raw={"ok": True},
+            )
+        return TokenRefreshResult(
+            access_token="access-beta-new",
+            refresh_token="refresh-beta-new",
+            id_token="id-beta-new",
+            account_id="acct-beta-new",
+            expires_in=3600,
+            expires_at="2026-04-08T10:00:00Z",
+            raw={"ok": True},
+        )
+
+    monkeypatch.setattr(service_module, "refresh_chatgpt_credentials", fake_refresh, raising=False)
+
+    release_beta = threading.Event()
+
+    def fake_fetch_usage(*, access_token: str, account_id: str):
+        if account_id == "acct-alpha-new":
+            raise UsageTimeoutError("usage request timed out")
+        if not release_beta.wait(timeout=1.0):
+            raise AssertionError("beta fetch was not released")
+        return UsageSnapshot(
+            account_id=account_id,
+            plan_type="plus",
+            primary_window=UsageWindow(used_percent=5, limit_window_seconds=18000, reset_at=1775505971),
+            secondary_window=UsageWindow(used_percent=15, limit_window_seconds=604800, reset_at=1776049573),
+            credits=UsageCredits(has_credits=True, unlimited=False, balance="12.50"),
+            raw={"plan_type": "plus"},
+        )
+
+    monkeypatch.setattr(service_module, "fetch_usage", fake_fetch_usage, raising=False)
+
+    try:
+        with pytest.raises(UsageTimeoutError, match="usage request timed out"):
+            service.list_usage_accounts()
+    finally:
+        release_beta.set()
+
+    assert service.store.load_snapshot("alpha").raw["tokens"]["account_id"] == "acct-alpha-new"
+    assert service.store.read_live_auth()["tokens"]["account_id"] == "acct-alpha-new"
+
+
+def test_list_usage_accounts_continues_for_non_timeout_account_errors(tmp_path, monkeypatch) -> None:
+    service = CodexAuthService(home=tmp_path)
+    service.store.save_snapshot("alpha", make_snapshot("acct-alpha"), force=False, mark_active=True)
+    service.store.save_snapshot("beta", make_snapshot("acct-beta"), force=False, mark_active=False)
+
+    monkeypatch.setattr("codex_auth.service.probe_usage_endpoint", lambda: None)
+
+    def fake_fetch(target: UsageQueryTarget) -> AccountUsageResult:
+        if target.name == "alpha":
+            return make_usage_result(target, error="usage request failed: 429 Too Many Requests")
+        return make_usage_result(target)
+
+    monkeypatch.setattr("codex_auth.service.fetch_account_usage_snapshot", fake_fetch)
+
+    results = service.list_usage_accounts()
+
+    assert results[0].error == "usage request failed: 429 Too Many Requests"
+    assert results[1].error is None
 
 
 def test_list_usage_accounts_limits_concurrent_fetches_to_four(tmp_path, monkeypatch) -> None:

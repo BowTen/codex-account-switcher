@@ -1,8 +1,6 @@
 ## Purpose
 Describe how the CLI queries and renders Codex account usage limits for managed snapshots and the current live account.
-
 ## Requirements
-
 ### Requirement: Query usage for managed and current live accounts
 
 The tool SHALL provide a `usage` command that queries saved managed accounts by default and also includes the current live `~/.codex/auth.json` account when it does not match a saved managed snapshot.
@@ -61,32 +59,76 @@ The tool SHALL render usage results in a human-friendly terminal format that sho
 
 ### Requirement: Degrade gracefully when usage cannot be fetched
 
-The tool SHALL handle usage query failures on a per-account basis and SHALL avoid aborting an entire batch when one account fails.
+The tool SHALL handle non-timeout usage query failures on a per-account basis and SHALL avoid aborting an entire batch when one account fails for a reason other than endpoint reachability or request timeout.
 
 #### Scenario: Report a named account lookup failure
 - **WHEN** the operator runs `codex-auth usage <name>` for a missing managed account
 - **THEN** the tool fails the command with a user-facing unknown-account error
 
-#### Scenario: Report a per-account usage fetch failure in a batch
-- **WHEN** one account in a batch usage query receives a non-success usage API response or invalid payload
+#### Scenario: Report a per-account non-timeout usage fetch failure in a batch
+- **WHEN** one account in a batch usage query receives a non-success usage API response, invalid payload, or refresh failure without timing out
 - **THEN** the tool renders a concise error for that account and continues rendering successful account results
 
 #### Scenario: Report missing rate limit data
 - **WHEN** the usage API response does not include either rate limit window for an otherwise valid account
 - **THEN** the tool reports that no rate limit data is available for that account instead of silently omitting it
 
-### Requirement: Batch usage queries use bounded concurrency without reordering output
+### Requirement: Batch usage queries use bounded concurrency with quota-priority presentation
 
-The tool SHALL execute bare `codex-auth usage` account queries with bounded concurrency to reduce total runtime while preserving deterministic result ordering.
+The tool SHALL execute bare `codex-auth usage` account queries with bounded concurrency to reduce total runtime while presenting completed results by quota priority instead of raw completion order.
 
 #### Scenario: Query all accounts with bounded concurrency
 - **WHEN** the operator runs bare `codex-auth usage` and multiple accounts need to be queried
 - **THEN** the tool executes per-account usage queries concurrently with a fixed maximum concurrency of `4`
 
-#### Scenario: Preserve output order during concurrent batch querying
-- **WHEN** the operator runs bare `codex-auth usage` and account queries complete in different wall-clock orders
-- **THEN** the tool renders results in the original deterministic account order instead of completion order
+#### Scenario: Present completed results by remaining quota priority
+- **WHEN** multiple account results are available during or after a batch usage query
+- **THEN** the tool presents successful results ordered by ascending `5h` remaining percentage, then ascending weekly remaining percentage, with lower remaining quota higher on the screen
+
+#### Scenario: Keep errors visible ahead of successful sorted results
+- **WHEN** some completed accounts have usage errors and others complete successfully
+- **THEN** the tool presents the errored accounts ahead of the successful quota-sorted results so failures remain visible
 
 #### Scenario: Keep named account queries serial
 - **WHEN** the operator runs `codex-auth usage <name>`
 - **THEN** the tool queries only that account without invoking the batch concurrency path
+
+### Requirement: Interactive batch usage queries show live query status
+
+The tool SHALL render bare `codex-auth usage` as a live terminal view when stdout is an interactive TTY, with completed results above and query status below.
+
+#### Scenario: Show the current phase plus running and queued accounts
+- **WHEN** the operator runs bare `codex-auth usage` in an interactive TTY
+- **THEN** the tool renders a bottom status area that shows the current query phase plus the currently running and queued account names
+
+#### Scenario: Insert completed accounts into the result area as they finish
+- **WHEN** an account finishes during an interactive batch usage query
+- **THEN** the tool removes that account from the bottom status area and immediately renders its result in the top result area
+
+#### Scenario: Fall back to plain-text output outside interactive terminals
+- **WHEN** the operator runs bare `codex-auth usage` with stdout redirected or otherwise not attached to a TTY
+- **THEN** the tool skips live terminal redraw behavior and renders stable plain-text output instead
+
+### Requirement: Usage queries preflight the usage endpoint before account fetches
+
+The tool SHALL probe the ChatGPT usage endpoint before starting any named or batch usage query and SHALL treat any HTTP response from that endpoint as proof of reachability.
+
+#### Scenario: Continue after a reachable endpoint returns an HTTP response
+- **WHEN** the preflight request reaches `https://chatgpt.com/backend-api/wham/usage` and receives any HTTP response before account queries begin
+- **THEN** the tool treats the endpoint as reachable and continues into the named or batch usage query flow
+
+#### Scenario: Fail fast when the usage endpoint is unreachable
+- **WHEN** the preflight request cannot reach `https://chatgpt.com/backend-api/wham/usage` before account queries begin
+- **THEN** the tool fails the command immediately with a user-facing network error and does not start any per-account usage query
+
+### Requirement: Usage request timeouts terminate usage commands
+
+The tool SHALL apply an explicit timeout to usage requests and SHALL treat timeout failures as command-level failures rather than ordinary per-account usage errors.
+
+#### Scenario: Fail a named usage query on timeout
+- **WHEN** the operator runs `codex-auth usage <name>` and that account's usage request times out
+- **THEN** the tool fails the command with a user-facing timeout error
+
+#### Scenario: Abort a batch usage query when one account times out
+- **WHEN** the operator runs bare `codex-auth usage` and any in-flight account usage request times out
+- **THEN** the tool aborts the batch, exits non-zero, and does not continue waiting for the remaining accounts to finish
