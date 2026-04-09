@@ -6,15 +6,15 @@
 
 ## 2. Interactive Live View
 
-- [ ] 2.1 Add live usage rendering helpers in `src/codex_auth/cli.py` for the bottom status area and top completed-results area.
-- [ ] 2.2 Sort completed successful results by ascending 5-hour remaining quota, then ascending weekly remaining quota, while keeping errored results visible first.
-- [ ] 2.3 Render completed account results incrementally as progress events arrive instead of waiting for the full batch to finish.
-- [ ] 2.4 Add `tests/test_cli_read_commands.py` coverage for live status rendering, incremental result insertion, and quota-priority ordering.
+- [x] 2.1 Add live usage rendering helpers in `src/codex_auth/cli.py` for the bottom status area and top completed-results area.
+- [x] 2.2 Sort completed successful results by ascending 5-hour remaining quota, then ascending weekly remaining quota, while keeping errored results visible first.
+- [x] 2.3 Render completed account results incrementally as progress events arrive instead of waiting for the full batch to finish.
+- [x] 2.4 Add `tests/test_cli_read_commands.py` coverage for live status rendering, incremental result insertion, and quota-priority ordering.
 
 ## 3. Fallback and Verification
 
-- [ ] 3.1 Keep redirected and non-TTY bare `usage` output on a stable plain-text path.
+- [x] 3.1 Keep redirected and non-TTY bare `usage` output on a stable plain-text path.
 - [ ] 3.2 Update `README.md` only if the live-view versus plain-text behavior needs operator-facing clarification.
-- [ ] 3.3 Run `uv run pytest tests/test_service.py tests/test_cli_read_commands.py -q`.
+- [x] 3.3 Run `uv run pytest tests/test_service.py tests/test_cli_read_commands.py -q`.
 - [ ] 3.4 Run `uv run pytest -q`.
 - [ ] 3.5 Mark this OpenSpec task list complete after implementation and verification.
