@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import os
 import sys
 from pathlib import Path
 
@@ -301,6 +302,15 @@ def _stdout_is_tty() -> bool:
         return False
 
 
+def _terminal_supports_ansi() -> bool:
+    term = os.environ.get("TERM", "").strip().lower()
+    return term not in {"", "dumb", "unknown"}
+
+
+def _live_usage_enabled() -> bool:
+    return _stdout_is_tty() and _terminal_supports_ansi()
+
+
 def _draw_live_usage(lines: list[str]) -> None:
     sys.stdout.write("\x1b[2J\x1b[H")
     if lines:
@@ -387,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(line)
                 return 0 if result.error is None else 1
 
-            if _stdout_is_tty():
+            if _live_usage_enabled():
                 return _run_live_usage(service)
 
             results = service.list_usage_accounts()
